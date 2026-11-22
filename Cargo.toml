@@ -1,0 +1,126 @@
+[package]
+name = "volna-rs"
+version = "1.1.4"
+edition = "2021"
+rust-version = "1.92"
+license = "GPL-3.0-only"
+description = "Волна Rust — неофициальный клиент Яндекс Музыки"
+repository = "https://github.com/rnqg/yandex-music-rust"
+
+[dependencies]
+skia-safe = { version = "0.153.3", default-features = false }
+slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "unstable-fontique-011", "unstable-winit-030"] }
+rodio = { version = "0.20", default-features = false, features = ["symphonia-mp3", "symphonia-aac", "symphonia-isomp4"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+md-5 = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+miniz_oxide = "0.8"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.59"
+features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+  "Win32_UI_HiDpi",
+  "Win32_System_Threading",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_UI_Shell",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Registry",
+  "Win32_Security_Cryptography",
+  "Win32_UI_Controls_Dialogs",
+  "Win32_UI_Shell_Common",
+  "Win32_System_Com",
+]
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.7", default-features = false, features = ["wayland-data-control"] }
+# MPRIS на zbus 5, как у slint: второй копии zbus в сборке нет. async-io и futures-lite
+# приходят вместе с zbus и нужны для таймера и ожидания двух задач без tokio.
+mpris-server = "0.10"
+async-io = "2"
+futures-lite = "2"
+# Токен в связке ключей (GNOME Keyring, KWallet) через тот же zbus.
+secret-service = { version = "5.2", default-features = false, features = ["rt-async-io-crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+arboard = { version = "3.7", default-features = false }
+slint = { version = "1.18", default-features = false, features = ["accessibility"] }
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSAppearance", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSProcessInfo", "NSString", "NSURL"] }
+objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLCommandQueue", "MTLDevice"] }
+objc2-service-management = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
+security-framework = "3"
+souvlaki = { version = "0.8", default-features = false }
+
+[build-dependencies]
+slint-build = "1.18"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Пакет для Debian и Ubuntu: `cargo deb` (cargo install cargo-deb).
+# X11, Wayland и xkbcommon winit открывает сам во время работы, dpkg-shlibdeps их не видит.
+[package.metadata.deb]
+maintainer = "Spolzer <132726602+SpolzerMod@users.noreply.github.com>"
+copyright = "2026 Spolzer"
+section = "sound"
+extended-description = "Неофициальный клиент Яндекс Музыки на Rust и Slint, без Electron."
+depends = "$auto, libx11-6, libx11-xcb1, libxcursor1, libxrandr2, libxi6, libxcb1, libxcb-shm0, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0"
+recommends = "xdg-utils, zenity | kdialog"
+assets = [
+    ["target/release/volna-rs", "usr/bin/", "755"],
+    ["packaging/volna-rs.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/16.png", "usr/share/icons/hicolor/16x16/apps/volna-rs.png", "644"],
+    ["packaging/icons/32.png", "usr/share/icons/hicolor/32x32/apps/volna-rs.png", "644"],
+    ["packaging/icons/48.png", "usr/share/icons/hicolor/48x48/apps/volna-rs.png", "644"],
+    ["packaging/icons/64.png", "usr/share/icons/hicolor/64x64/apps/volna-rs.png", "644"],
+    ["packaging/icons/128.png", "usr/share/icons/hicolor/128x128/apps/volna-rs.png", "644"],
+    ["packaging/icons/256.png", "usr/share/icons/hicolor/256x256/apps/volna-rs.png", "644"],
+]
+
+# cargo generate-rpm: пакет для Fedora и openSUSE. Библиотеки окна winit открывает сам,
+# поэтому они указаны по soname: так зависимость понимают обе системы.
+[package.metadata.generate-rpm]
+summary = "Неофициальный клиент Яндекс Музыки"
+require-sh = false
+assets = [
+    { source = "target/release/volna-rs", dest = "/usr/bin/volna-rs", mode = "755" },
+    { source = "packaging/volna-rs.desktop", dest = "/usr/share/applications/volna-rs.desktop", mode = "644" },
+    { source = "packaging/icons/16.png", dest = "/usr/share/icons/hicolor/16x16/apps/volna-rs.png", mode = "644" },
+    { source = "packaging/icons/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/volna-rs.png", mode = "644" },
+    { source = "packaging/icons/48.png", dest = "/usr/share/icons/hicolor/48x48/apps/volna-rs.png", mode = "644" },
+    { source = "packaging/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/volna-rs.png", mode = "644" },
+    { source = "packaging/icons/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/volna-rs.png", mode = "644" },
+    { source = "packaging/icons/256.png", dest = "/usr/share/icons/hicolor/256x256/apps/volna-rs.png", mode = "644" },
+]
+
+[package.metadata.generate-rpm.requires]
+"libwayland-client.so.0()(64bit)" = "*"
+"libwayland-cursor.so.0()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libXrandr.so.2()(64bit)" = "*"
+
+[package.metadata.generate-rpm.recommends]
+xdg-utils = "*"
+"(zenity or kdialog)" = "*"

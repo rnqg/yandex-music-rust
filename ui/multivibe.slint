@@ -1,0 +1,219 @@
+import { ScrollView } from "std-widgets.slint";
+import { App, T, WaveRoomItem } from "state.slint";
+import { Theme } from "theme.slint";
+import { Field, PillButton } from "widgets.slint";
+
+component RoomInput inherits Rectangle {
+    in-out property <string> text <=> field.text;
+    in property <string> label;
+    callback accepted();
+    public function paste-text() {
+        field.focus();
+        field.select-all();
+        field.paste();
+    }
+    height: 40px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-size-s;
+    background: Theme.controls-color-secondary-default-enabled;
+    Text {
+        x: 12px;
+        width: parent.width - 24px;
+        text: root.label;
+        visible: root.text == "";
+        vertical-alignment: center;
+        overflow: elide;
+        color: Theme.controls-color-primary-text-enabled;
+        font-size: Theme.font-size-label-m;
+    }
+    field := Field {
+        x: 12px;
+        width: parent.width - 24px;
+        height: parent.height;
+        enabled: !App.wave-rooms-busy;
+        single-line: true;
+        vertical-alignment: center;
+        accessible-label: root.label;
+        color: Theme.controls-color-primary-text-enabled-variant;
+        font-size: Theme.font-size-label-m;
+        accepted => { root.accepted(); }
+    }
+}
+
+component RoomRow inherits Rectangle {
+    in property <WaveRoomItem> room;
+    property <bool> editing;
+    property <bool> leaving;
+    min-height: 84px;
+    preferred-height: 84px;
+    vertical-stretch: 0;
+    border-radius: Theme.radius-size-m;
+    background: Theme.background-color-primary-enabled-content;
+
+    if !editing && !leaving: HorizontalLayout {
+        padding: 12px;
+        spacing: 6px;
+        alignment: start;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 3px;
+            Text {
+                text: room.title;
+                overflow: elide;
+                color: Theme.controls-color-primary-text-enabled-variant;
+                font-size: Theme.font-size-label-l;
+                font-weight: 700;
+            }
+            if room.members != "": Text {
+                text: room.members;
+                overflow: elide;
+                color: Theme.controls-color-primary-text-enabled;
+                font-size: Theme.font-size-label-s;
+            }
+            if room.status != "": Text {
+                text: room.status;
+                color: Theme.controls-color-primary-text-enabled;
+                font-size: Theme.font-size-label-s;
+            }
+        }
+        if room.playable: PillButton {
+            primary: true;
+            text: T.t("Слушать");
+            clicked => { App.wave-room-action("play", room.id, ""); }
+        }
+        if room.invite: PillButton {
+            text: T.t("Скопировать ссылку");
+            clicked => { App.wave-room-action("copy", room.id, ""); }
+        }
+        PillButton {
+            text: T.t("Переименовать");
+            clicked => { root.editing = true; }
+        }
+        PillButton {
+            text: T.t("Выйти");
+            clicked => { root.leaving = true; }
+        }
+    }
+    if editing: HorizontalLayout {
+        padding: 12px;
+        spacing: 8px;
+        field := RoomInput {
+            label: T.t("Название");
+            text: room.title;
+            accepted => { App.wave-room-action("rename", room.id, field.text); }
+        }
+        PillButton {
+            primary: true;
+            text: T.t("Сохранить");
+            clicked => { App.wave-room-action("rename", room.id, field.text); }
+        }
+        PillButton {
+            text: T.t("Отмена");
+            clicked => { root.editing = false; }
+        }
+    }
+    if leaving: HorizontalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text {
+            horizontal-stretch: 1;
+            text: T.t("Выйти из волны?");
+            vertical-alignment: center;
+            color: Theme.controls-color-primary-text-enabled-variant;
+        }
+        PillButton {
+            primary: true;
+            text: T.t("Выйти");
+            clicked => { App.wave-room-action("leave", room.id, ""); }
+        }
+        PillButton {
+            text: T.t("Отмена");
+            clicked => { root.leaving = false; }
+        }
+    }
+}
+
+export component SharedWaveDialog inherits Rectangle {
+    property <string> invitation-link;
+    background: Theme.background-color-primary-enabled-overlay;
+    TouchArea { clicked => { App.wave-rooms-open = false; } }
+    Rectangle {
+        width: min(680px, parent.width - 48px);
+        height: min(566px, parent.height - 64px);
+        border-radius: Theme.radius-size-xl;
+        background: Theme.background-color-primary-enabled-popover;
+        TouchArea { }
+        VerticalLayout {
+            padding: 22px;
+            spacing: 12px;
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    text: T.t("Моя волна на двоих");
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                    font-family: Theme.display-font;
+                    font-size: Theme.font-size-headline-xs;
+                    font-weight: 700;
+                    color: Theme.controls-color-primary-text-enabled-variant;
+                }
+                PillButton {
+                    text: T.t("Закрыть");
+                    clicked => { App.wave-rooms-open = false; }
+                }
+            }
+            if App.wave-rooms-busy || App.wave-rooms-error != "": Text {
+                text: App.wave-rooms-busy ? T.t("Загрузка…") : App.wave-rooms-error;
+                color: Theme.controls-color-primary-text-enabled-variant;
+                wrap: word-wrap;
+                font-size: Theme.font-size-label-m;
+            }
+            ScrollView {
+                visible: !App.wave-rooms-busy;
+                vertical-stretch: 1;
+                VerticalLayout {
+                    width: parent.width - 10px;
+                    alignment: start;
+                    spacing: 8px;
+                    if App.wave-rooms.length == 0 && App.wave-rooms-error == "": Text {
+                        text: T.t("Совместных волн пока нет");
+                        font-size: Theme.font-size-label-m;
+                        color: Theme.controls-color-primary-text-enabled;
+                    }
+                    for entry in App.wave-rooms: RoomRow { room: entry; }
+                }
+            }
+            if App.wave-rooms-busy: Rectangle { vertical-stretch: 1; }
+            if !App.wave-rooms-busy: HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                PillButton {
+                    primary: true;
+                    text: T.t("Создать ссылку");
+                    clicked => { App.wave-room-action("create", "", ""); }
+                }
+                PillButton {
+                    text: T.t("Обновить");
+                    clicked => { App.wave-room-action("refresh", "", ""); }
+                }
+            }
+            if !App.wave-rooms-busy: HorizontalLayout {
+                spacing: 8px;
+                invite := RoomInput {
+                    label: T.t("Ссылка-приглашение");
+                    text <=> root.invitation-link;
+                    accepted => { App.wave-room-action("join", "", invite.text); }
+                }
+                PillButton {
+                    text: T.t("Вставить");
+                    clicked => { invite.paste-text(); }
+                }
+                PillButton {
+                    text: T.t("Присоединиться");
+                    clicked => { App.wave-room-action("join", "", invite.text); }
+                }
+            }
+        }
+    }
+}
