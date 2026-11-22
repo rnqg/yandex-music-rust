@@ -1,10 +1,10 @@
-# Волна Rust
+# Яндекс Музыка Rust
 
 Независимый некоммерческий клиент Яндекс Музыки на Rust и Slint для Mac с Apple Silicon и macOS 13 или новее. Проект не связан с Яндексом.
 
 ## Установка
 
-1. Откройте `volna-rs-macos-arm64.dmg` и перетащите «Волну Rust» в «Программы».
+1. Откройте `music-rust-macos-arm64.dmg` и перетащите «Яндекс Музыка Rust» в «Программы».
 2. Запустите приложение. Откройте `ya.ru/device` из окна входа и введите показанный код.
 3. Для полного воспроизведения используйте аккаунт с Яндекс Плюсом.
 
@@ -24,13 +24,13 @@
 На Mac с Apple Silicon понадобятся Rust stable и Xcode Command Line Tools и `dmgbuild==1.6.7`. Запустите из корня репозитория.
 
 ```sh
-bash tools/macos-dmg.sh "$HOME/Downloads/volna-rs-macos-arm64.dmg"
+bash tools/macos-dmg.sh "$HOME/Downloads/music-rust-macos-arm64.dmg"
 ```
 
 Тесты можно запустить со сборкой в системном временном каталоге.
 
 ```sh
-build_dir=$(mktemp -d -t volna-rs)
+build_dir=$(mktemp -d -t music-rust)
 (
   trap 'rm -rf "$build_dir"' EXIT
   MACOSX_DEPLOYMENT_TARGET=13.0 CARGO_TARGET_DIR="$build_dir" cargo test --locked

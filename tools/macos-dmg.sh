@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ "$(uname -s)" != Darwin || "$(uname -m)" != arm64 || $# != 1 ]]; then
-    echo 'Usage on Apple Silicon: bash tools/macos-dmg.sh /path/to/volna-rs-macos-arm64.dmg' >&2
+    echo 'Usage on Apple Silicon: bash tools/macos-dmg.sh /path/to/music-rust-macos-arm64.dmg' >&2
     exit 1
 fi
 
@@ -17,7 +17,7 @@ if [[ "$output" != *.dmg || -e "$output" ]]; then
 fi
 
 command -v dmgbuild >/dev/null || { echo 'Install dmgbuild==1.6.7 before building the DMG.' >&2; exit 1; }
-work="$(mktemp -d -t volna-rs-dmg)"
+work="$(mktemp -d -t music-rust-dmg)"
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -51,6 +51,6 @@ done
 iconutil -c icns "$work/AppIcon.iconset" -o "$app/Contents/Resources/AppIcon.icns"
 codesign --force --sign - "$app"
 codesign --verify --strict "$app"
-dmgbuild -s "$assets/dmg.py" -D "application=$app" "$name" "$work/volna-rs.dmg"
-mv -n "$work/volna-rs.dmg" "$output"
-test ! -e "$work/volna-rs.dmg"
+dmgbuild -s "$assets/dmg.py" -D "application=$app" "$name" "$work/music-rust.dmg"
+mv -n "$work/music-rust.dmg" "$output"
+test ! -e "$work/music-rust.dmg"

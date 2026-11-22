@@ -11,10 +11,10 @@ jobs:
   macos:
     runs-on: macos-15
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/volna-rs-target
       MACOSX_DEPLOYMENT_TARGET: '13.0'
     steps:
       - uses: actions/checkout@v7
+      - run: printf 'CARGO_TARGET_DIR=%s/music-rust-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -31,12 +31,12 @@ jobs:
       - run: |
           python3 -m venv "$RUNNER_TEMP/dmg-tools"
           "$RUNNER_TEMP/dmg-tools/bin/pip" install dmgbuild==1.6.7
-          PATH="$RUNNER_TEMP/dmg-tools/bin:$PATH" bash tools/macos-dmg.sh "$RUNNER_TEMP/volna-rs-macos-arm64.dmg"
-      - run: shasum -a 256 "$RUNNER_TEMP/volna-rs-macos-arm64.dmg"
+          PATH="$RUNNER_TEMP/dmg-tools/bin:$PATH" bash tools/macos-dmg.sh "$RUNNER_TEMP/music-rust-macos-arm64.dmg"
+      - run: shasum -a 256 "$RUNNER_TEMP/music-rust-macos-arm64.dmg"
 
       - uses: actions/upload-artifact@v7
         with:
-          path: ${{ runner.temp }}/volna-rs-macos-arm64.dmg
+          path: ${{ runner.temp }}/music-rust-macos-arm64.dmg
           archive: false
 
   release:
@@ -55,4 +55,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" dist/volna-rs-macos-arm64.dmg --title "Волна Rust ${GITHUB_REF_NAME#v} для macOS" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" dist/music-rust-macos-arm64.dmg --title "Яндекс Музыка Rust ${GITHUB_REF_NAME#v} для macOS" --generate-notes

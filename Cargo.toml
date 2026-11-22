@@ -1,10 +1,10 @@
 [package]
-name = "volna-rs"
+name = "music-rust"
 version = "1.1.4"
 edition = "2021"
 rust-version = "1.92"
 license = "GPL-3.0-only"
-description = "Волна Rust — неофициальный клиент Яндекс Музыки"
+description = "Яндекс Музыка Rust — неофициальный клиент Яндекс Музыки"
 repository = "https://github.com/rnqg/yandex-music-rust"
 
 [dependencies]
@@ -84,14 +84,14 @@ extended-description = "Неофициальный клиент Яндекс М�
 depends = "$auto, libx11-6, libx11-xcb1, libxcursor1, libxrandr2, libxi6, libxcb1, libxcb-shm0, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-cursor0"
 recommends = "xdg-utils, zenity | kdialog"
 assets = [
-    ["target/release/volna-rs", "usr/bin/", "755"],
-    ["packaging/volna-rs.desktop", "usr/share/applications/", "644"],
-    ["packaging/icons/16.png", "usr/share/icons/hicolor/16x16/apps/volna-rs.png", "644"],
-    ["packaging/icons/32.png", "usr/share/icons/hicolor/32x32/apps/volna-rs.png", "644"],
-    ["packaging/icons/48.png", "usr/share/icons/hicolor/48x48/apps/volna-rs.png", "644"],
-    ["packaging/icons/64.png", "usr/share/icons/hicolor/64x64/apps/volna-rs.png", "644"],
-    ["packaging/icons/128.png", "usr/share/icons/hicolor/128x128/apps/volna-rs.png", "644"],
-    ["packaging/icons/256.png", "usr/share/icons/hicolor/256x256/apps/volna-rs.png", "644"],
+    ["target/release/music-rust", "usr/bin/", "755"],
+    ["packaging/music-rust.desktop", "usr/share/applications/", "644"],
+    ["packaging/icons/16.png", "usr/share/icons/hicolor/16x16/apps/music-rust.png", "644"],
+    ["packaging/icons/32.png", "usr/share/icons/hicolor/32x32/apps/music-rust.png", "644"],
+    ["packaging/icons/48.png", "usr/share/icons/hicolor/48x48/apps/music-rust.png", "644"],
+    ["packaging/icons/64.png", "usr/share/icons/hicolor/64x64/apps/music-rust.png", "644"],
+    ["packaging/icons/128.png", "usr/share/icons/hicolor/128x128/apps/music-rust.png", "644"],
+    ["packaging/icons/256.png", "usr/share/icons/hicolor/256x256/apps/music-rust.png", "644"],
 ]
 
 # cargo generate-rpm: пакет для Fedora и openSUSE. Библиотеки окна winit открывает сам,
@@ -100,14 +100,14 @@ assets = [
 summary = "Неофициальный клиент Яндекс Музыки"
 require-sh = false
 assets = [
-    { source = "target/release/volna-rs", dest = "/usr/bin/volna-rs", mode = "755" },
-    { source = "packaging/volna-rs.desktop", dest = "/usr/share/applications/volna-rs.desktop", mode = "644" },
-    { source = "packaging/icons/16.png", dest = "/usr/share/icons/hicolor/16x16/apps/volna-rs.png", mode = "644" },
-    { source = "packaging/icons/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/volna-rs.png", mode = "644" },
-    { source = "packaging/icons/48.png", dest = "/usr/share/icons/hicolor/48x48/apps/volna-rs.png", mode = "644" },
-    { source = "packaging/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/volna-rs.png", mode = "644" },
-    { source = "packaging/icons/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/volna-rs.png", mode = "644" },
-    { source = "packaging/icons/256.png", dest = "/usr/share/icons/hicolor/256x256/apps/volna-rs.png", mode = "644" },
+    { source = "target/release/music-rust", dest = "/usr/bin/music-rust", mode = "755" },
+    { source = "packaging/music-rust.desktop", dest = "/usr/share/applications/music-rust.desktop", mode = "644" },
+    { source = "packaging/icons/16.png", dest = "/usr/share/icons/hicolor/16x16/apps/music-rust.png", mode = "644" },
+    { source = "packaging/icons/32.png", dest = "/usr/share/icons/hicolor/32x32/apps/music-rust.png", mode = "644" },
+    { source = "packaging/icons/48.png", dest = "/usr/share/icons/hicolor/48x48/apps/music-rust.png", mode = "644" },
+    { source = "packaging/icons/64.png", dest = "/usr/share/icons/hicolor/64x64/apps/music-rust.png", mode = "644" },
+    { source = "packaging/icons/128.png", dest = "/usr/share/icons/hicolor/128x128/apps/music-rust.png", mode = "644" },
+    { source = "packaging/icons/256.png", dest = "/usr/share/icons/hicolor/256x256/apps/music-rust.png", mode = "644" },
 ]
 
 [package.metadata.generate-rpm.requires]

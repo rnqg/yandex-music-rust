@@ -5,17 +5,17 @@
     <key>CFBundleDevelopmentRegion</key>
     <string>ru</string>
     <key>CFBundleDisplayName</key>
-    <string>Волна Rust</string>
+    <string>Яндекс Музыка Rust</string>
     <key>CFBundleExecutable</key>
-    <string>volna-rs</string>
+    <string>music-rust</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
-    <string>local.volna-rs.macos</string>
+    <string>local.music-rust.macos</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Волна Rust</string>
+    <string>Яндекс Музыка Rust</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>

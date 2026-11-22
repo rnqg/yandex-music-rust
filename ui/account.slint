@@ -458,9 +458,10 @@ export component AboutDialog inherits Rectangle {
                 }
             }
             Text {
-                text: T.t("Неофициальный клиент Яндекс Музыки");
+                text: T.t("Независимый клиент. Проект не связан с Яндексом.");
                 font-size: Theme.font-size-label-m;
                 color: Theme.controls-color-primary-text-enabled;
+                wrap: word-wrap;
             }
             Text {
                 text: T.t("Версия ") + App.version + " · GPL-3.0";

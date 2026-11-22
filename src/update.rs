@@ -18,7 +18,7 @@ const ASSET: &str = concat!(env!("CARGO_PKG_NAME"), ".exe");
 /// Проверка включена в настройках («Проверять обновления»).
 pub static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 pub const REPOSITORY: &str = env!("CARGO_PKG_REPOSITORY");
-pub const AVAILABLE: bool = !REPOSITORY.is_empty() && option_env!("VOLNA_PUBLIC_UPDATES").is_some();
+pub const AVAILABLE: bool = !REPOSITORY.is_empty() && option_env!("MUSIC_RUST_PUBLIC_UPDATES").is_some();
 
 /// Страница GitHub со всеми изменениями между запущенной версией и новой.
 pub fn changes_url(version: &str) -> String {
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn paths() {
-        assert_eq!(old_path(Path::new(r"C:\a\volna-rs.exe")), Path::new(r"C:\a\volna-rs.old.exe"));
-        assert_eq!(ASSET, "volna-rs.exe");
+        assert_eq!(old_path(Path::new(r"C:\a\music-rust.exe")), Path::new(r"C:\a\music-rust.old.exe"));
+        assert_eq!(ASSET, "music-rust.exe");
     }
 }

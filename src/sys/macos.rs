@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
-const BUNDLE_ID: &str = "local.volna-rs.macos";
+const BUNDLE_ID: &str = "local.music-rust.macos";
 
 pub fn created(w: &slint::Window) -> bool {
     w.with_winit_window(|_| ()).is_some()

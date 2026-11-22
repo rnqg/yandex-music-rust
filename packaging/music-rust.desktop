@@ -1,13 +1,13 @@
 [Desktop Entry]
 Type=Application
-Name=Волна Rust
+Name=Яндекс Музыка Rust
 GenericName=Music player
 GenericName[ru]=Музыкальный плеер
 Comment=Unofficial Yandex Music client
 Comment[ru]=Неофициальный клиент Яндекс Музыки
-Exec=volna-rs
-Icon=volna-rs
+Exec=music-rust
+Icon=music-rust
 Terminal=false
 Categories=AudioVideo;Audio;Player;
 Keywords=music;yandex;player;музыка;яндекс;
-StartupWMClass=volna-rs
+StartupWMClass=music-rust

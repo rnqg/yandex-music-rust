@@ -132,7 +132,7 @@ fn metadata(t: &Track, duration: f32) -> Metadata {
 /// Путь объекта D-Bus для трека: в нём допустимы только буквы, цифры и `_`.
 fn track_id(id: &str) -> TrackId {
     let safe: String = id.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
-    TrackId::try_from(format!("/local/volna_rs/track/t{safe}")).unwrap_or(TrackId::NO_TRACK)
+    TrackId::try_from(format!("/local/music_rust/track/t{safe}")).unwrap_or(TrackId::NO_TRACK)
 }
 
 fn time(secs: f32) -> Time {

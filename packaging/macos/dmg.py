@@ -6,7 +6,6 @@ name = application.name
 format = "UDZO"
 files = [str(application)]
 symlinks = {"Applications": "/Applications"}
-hide_extensions = [name]
 background = "builtin-arrow"
 window_rect = ((140, 160), (640, 240))
 icon_size = 112

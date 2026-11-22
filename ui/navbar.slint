@@ -56,37 +56,42 @@ export component Navbar inherits TouchArea {
         }
     }
     if App.macos: Rectangle {
+        property <image> brand: c
+            ? (Theme.dark ? Icons.logo-mark-dark : Icons.logo-mark)
+            : (Theme.dark ? Icons.logo-dark : Icons.logo);
         x: 16px;
-        y: 14px;
-        width: c ? 40px : 176px;
-        height: 48px;
-        MusicMark { x: 0px; width: 36px; height: 36px; }
-        if !c: Rectangle {
-            x: 46px;
+        y: 12px;
+        width: c ? 40px : 171px;
+        height: c ? 48px : 58px;
+        if brand.width > 0: Image {
+            x: 0px;
             y: 0px;
-            width: parent.width - self.x;
-            height: 36px;
-            Text {
-                x: 0px;
-                y: 0px;
-                height: 29px;
-                text: "Волна";
-                font-family: Theme.display-font;
-                font-weight: 700;
-                font-size: 28px;
-                vertical-alignment: center;
-                color: Theme.logo-color-primary-player;
-            }
-            Text {
-                x: 2px;
-                y: 28px;
-                height: 11px;
-                text: "Rust";
-                font-size: 9px;
-                font-weight: 500;
-                vertical-alignment: center;
-                color: Theme.controls-color-primary-text-enabled;
-            }
+            width: parent.width;
+            height: 48px;
+            source: brand;
+            image-fit: contain;
+        }
+        if brand.width == 0: MusicMark { x: 0px; y: 6px; width: 36px; height: 36px; }
+        if !c && brand.width == 0: Text {
+            x: 49px;
+            y: 0px;
+            height: 48px;
+            text: "Яндекс Музыка";
+            font-family: Theme.display-font;
+            font-size: 16px;
+            font-weight: 700;
+            vertical-alignment: center;
+            color: Theme.logo-color-primary-player;
+        }
+        if !c: Text {
+            x: brand.width > 0 ? 54px : 49px;
+            y: 45px;
+            height: 11px;
+            text: "Rust";
+            font-size: 9px;
+            font-weight: 500;
+            vertical-alignment: center;
+            color: Theme.controls-color-primary-text-enabled;
         }
         TouchArea {
             mouse-cursor: MouseCursor.pointer;
