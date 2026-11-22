@@ -61,9 +61,10 @@ export component ListPage inherits Rectangle {
     property <length> row-h: 56px;
 
     Rectangle {
+        property <color> tint: likes && Theme.dark ? App.list-tint.with-alpha(0.12) : App.list-tint;
         y: 0;
         height: 340px;
-        background: @linear-gradient(180deg, App.list-tint 0%, App.list-tint.with-alpha(0) 100%);
+        background: @linear-gradient(180deg, tint 0%, tint.with-alpha(0) 100%);
     }
 
     flick := Flickable {
