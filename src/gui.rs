@@ -2145,7 +2145,7 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
             pl.normal.set(Some((window_pos(w), w.size(), was_max)));
             app.set_mini(true);
             app.set_maximized(false);
-            let mini_size = LogicalSize::new(420.0, 120.0);
+            let mini_size = slint::LogicalSize::new(420.0, 120.0);
             // KWin в ответ на set_maximized(false) присылает текущий размер и перебивает размер плашки.
             if was_max {
                 w.set_maximized(false);
