@@ -112,8 +112,11 @@ struct Ctx {
     player: Player,
     discord: Arc<crate::discord::Discord>,
     images: Images,
+    lyric_tick: Timer,
     #[cfg(target_os = "macos")]
     wave_visual: Rc<wave_visual::WaveVisual>,
+    #[cfg(target_os = "macos")]
+    window_occluded: Cell<bool>,
     tracks: Rc<VecModel<TrackItem>>,
     st: RefCell<State>,
 }
@@ -260,9 +263,10 @@ impl Ctx {
         #[cfg(target_os = "macos")]
         {
             let visible = app.get_page() == Page::Wave && !app.get_mini() && !app.get_logged_out() && !app.get_fullscreen()
+                && !self.window_occluded.get()
                 && !ui.window().is_minimized() && ui.window().with_winit_window(|w| w.is_visible()).flatten().unwrap_or(true);
-            let motion = app.get_motion() && !objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
-            self.wave_visual.show(&ui, visible && motion, playing_now, track_color.filter(|_| playing_now), s.volume);
+            let animate = visible && app.get_motion() && !objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion();
+            self.wave_visual.show(&ui, animate, playing_now, track_color.filter(|_| playing_now), s.volume);
         }
 
         self.sync_trailer(&s);
@@ -273,9 +277,11 @@ impl Ctx {
             self.reset_lyrics();
         }
         self.update_lyric_current(s.position);
-        if app.get_fullscreen() && app.get_fs_mode() == 2 {
+        let showing_lyrics = app.get_fullscreen() && app.get_fs_mode() == 2;
+        if showing_lyrics {
             self.sync_lyrics();
         }
+        self.sync_lyric_timer(showing_lyrics && s.playing);
         let Some(t) = s.track.filter(|_| started) else {
             app.set_track_id(SharedString::new());
             app.set_title(SharedString::new());
@@ -335,6 +341,25 @@ impl Ctx {
                 });
             }
             self.update_list_current();
+        }
+    }
+
+    fn sync_lyric_timer(self: &Rc<Self>, enabled: bool) {
+        if !enabled {
+            self.lyric_tick.stop();
+        } else if !self.lyric_tick.running() {
+            let weak = Rc::downgrade(self);
+            self.lyric_tick.start(TimerMode::Repeated, Duration::from_millis(50), move || {
+                if let Some(ctx) = weak.upgrade() {
+                    let ui = ctx.ui();
+                    let app = ui.global::<App>();
+                    if app.get_fullscreen() && app.get_fs_mode() == 2 && app.get_playing() {
+                        ctx.update_lyric_current(ctx.player.position());
+                    } else {
+                        ctx.lyric_tick.stop();
+                    }
+                }
+            });
         }
     }
 
@@ -1860,8 +1885,11 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         player: player.clone(),
         discord,
         images: Images::new(lite),
+        lyric_tick: Timer::default(),
         #[cfg(target_os = "macos")]
         wave_visual: Rc::new(wave_visual::WaveVisual::new(player.eq.spectrum.clone())),
+        #[cfg(target_os = "macos")]
+        window_occluded: Cell::new(false),
         tracks,
         st: RefCell::new(State {
             cfg,
@@ -2246,6 +2274,11 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
         use slint::winit_030::EventResult;
         use winit::event::{ElementState, MouseButton, WindowEvent};
         match ev {
+            #[cfg(target_os = "macos")]
+            WindowEvent::Occluded(occluded) => {
+                with_ctx(|c| c.window_occluded.set(*occluded));
+                EventResult::Propagate
+            }
             #[cfg(target_os = "linux")]
             WindowEvent::CursorMoved { position, .. } => {
                 let p = position.to_logical::<f32>(_w.scale_factor() as f64);
@@ -2274,17 +2307,6 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
 
     let tick = Timer::default();
     tick.start(TimerMode::Repeated, Duration::from_millis(250), || with_ctx(|c| c.sync_player()));
-    // Строки текста переключаются точнее, чем раз в 250 мс.
-    let lyric_tick = Timer::default();
-    lyric_tick.start(TimerMode::Repeated, Duration::from_millis(50), || {
-        with_ctx(|c| {
-            let ui = c.ui();
-            let app = ui.global::<App>();
-            if app.get_fullscreen() && app.get_fs_mode() == 2 && app.get_playing() {
-                c.update_lyric_current(c.player.state().position);
-            }
-        })
-    });
 
     // «Как в системе» следит за темой Windows и на ходу. На Linux её отдаёт портал через
     // gdbus, запускать его каждые пару секунд не стоит.
@@ -3902,9 +3924,10 @@ impl Ctx {
     /// Пятно и фон волны: в паузе — исходная картинка и чёрный фон, во время игры — цвета трека.
     fn sync_vibe(self: &Rc<Self>, playing: bool, color: Option<[u8; 3]>) {
         let key = (playing, if playing { color } else { None });
-        if self.st.borrow().vibe_key == Some(key) && self.st.borrow().blob_src.is_some() {
+        if self.st.borrow().vibe_key == Some(key) {
             return;
         }
+        self.st.borrow_mut().vibe_key = Some(key);
         let ui = self.ui();
         let app = ui.global::<App>();
         let bucket = vibe_bucket(color);
@@ -3935,7 +3958,6 @@ impl Ctx {
             });
             return;
         };
-        self.st.borrow_mut().vibe_key = Some(key);
         if playing {
             app.set_blob(recolor(&src, bucket.4[2]));
         } else {

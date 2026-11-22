@@ -175,6 +175,10 @@ impl Player {
         self.shared.lock().unwrap().clone()
     }
 
+    pub fn position(&self) -> f32 {
+        self.shared.lock().unwrap().position
+    }
+
     pub fn is_liked(&self, id: &str) -> bool {
         self.likes.lock().unwrap().contains(id)
     }
