@@ -30,6 +30,16 @@ pub fn scale(w: &slint::Window) -> f32 {
         .unwrap_or(1.0)
 }
 
+pub fn frame_interval() -> std::time::Duration {
+    let rate = MainThreadMarker::new()
+        .and_then(|mtm| NSApplication::sharedApplication(mtm).keyWindow())
+        .and_then(|window| window.screen())
+        .map(|screen| screen.maximumFramesPerSecond())
+        .filter(|rate| *rate > 0)
+        .unwrap_or(60);
+    std::time::Duration::from_secs_f64(1.0 / rate.clamp(24, 120) as f64)
+}
+
 pub fn work_area(w: &slint::Window) -> (i32, i32, i32, i32) {
     let area = w.with_winit_window(|window| {
         let monitor = window.current_monitor()?;

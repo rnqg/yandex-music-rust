@@ -60,7 +60,11 @@ impl WaveVisual {
             }
             return;
         }
+        let interval = crate::sys::frame_interval();
         if self.timer.running() {
+            if self.timer.interval() != interval {
+                self.timer.set_interval(interval);
+            }
             return;
         }
         let sender = self.requests.get_or_init(|| {
@@ -74,7 +78,7 @@ impl WaveVisual {
         self.spectrum.active.store(playing, Ordering::Relaxed);
         let state = Rc::downgrade(self);
         let window = ui.as_weak();
-        self.timer.start(TimerMode::Repeated, Duration::from_millis(40), move || {
+        self.timer.start(TimerMode::Repeated, interval, move || {
             if let Some(state) = state.upgrade() {
                 if let Err(TrySendError::Disconnected(_)) = sender.try_send(FrameRequest { style: state.style.get(), generation }) {
                     state.timer.stop();
@@ -140,7 +144,7 @@ impl WaveVisual {
                 phase = (phase + elapsed * speed) % 86400.0;
                 let target = if style.playing { spectrum.bands(style.volume * style.volume) } else { [0.0; 3] };
                 for (current, sample) in audio.iter_mut().zip(target) {
-                    *current = (*current - 0.02).max(sample);
+                    *current = (*current - 0.5 * elapsed).max(sample);
                 }
                 let reaction = style.liked_at.map_or([0.0; 3], |at| like_reaction(at.elapsed().as_secs_f32()));
                 let Some(pixels) = autoreleasepool(|_| renderer.draw(phase, colors, &audio, &reaction)) else { break };

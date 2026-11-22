@@ -255,6 +255,9 @@ export global App {
     in property <bool> loading;
     in property <float> position;
     in property <float> duration;
+    in property <bool> smooth-progress;
+    out property <bool> animate-progress: motion && smooth-progress;
+    out property <float> track-progress: duration > 0 ? clamp(position / duration, 0, 1) : 0;
     in property <bool> liked;
     in property <int> repeat;
     in property <bool> shuffle;

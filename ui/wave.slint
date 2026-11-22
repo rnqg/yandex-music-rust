@@ -342,9 +342,10 @@ export component WavePage inherits Rectangle {
     property <length> dp: App.macos ? root.height - 780px : max(wh - 248px, min(wh - 200px, 600px)) - 600px;
     property <length> dt: max(wh / 2 - 225px, min(wh / 2 - 209px, 191px)) - 191px;
     property <length> db: max(wh / 2 - 458px, min(wh / 2 - 442px, -42px)) + 42px;
-    property <float> progress: App.duration > 0 ? App.position / App.duration : 0;
+    property <float> progress: App.track-progress;
+    animate progress { duration: App.animate-progress ? 250ms : 0ms; easing: linear; }
     property <float> drag-progress: -1;
-    property <float> shown: drag-progress >= 0 ? drag-progress : progress;
+    property <float> shown: drag-progress >= 0 ? drag-progress : App.animate-progress ? progress : App.track-progress;
     property <length> artwork-top: max(104px, 110px + dp * 0.12);
     property <length> artwork-height: max(0px, 508px + dp - artwork-top);
     property <length> album-side: clamp(text-w * 0.22, 72px, 96px);

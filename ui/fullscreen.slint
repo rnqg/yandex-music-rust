@@ -106,9 +106,10 @@ component QueueRow inherits Rectangle {
 component Poster inherits Rectangle {
     width: 400px;
     height: 508px;
-    property <float> progress: App.duration > 0 ? App.position / App.duration : 0;
+    property <float> progress: App.track-progress;
+    animate progress { duration: App.animate-progress ? 250ms : 0ms; easing: linear; }
     property <float> drag: -1;
-    property <float> shown: drag >= 0 ? drag : progress;
+    property <float> shown: drag >= 0 ? drag : App.animate-progress ? progress : App.track-progress;
 
     poster := Rectangle {
         y: 0;
@@ -300,13 +301,11 @@ component LyricRow inherits Rectangle {
     // Прозрачность через цвет текста: opacity на элементе с детьми рисуется отдельным
     // слоем во всю область отрисовки, и в программном Skia каждая строка стоит кадр.
     property <float> alpha: shade;
-    animate alpha { duration: App.motion ? 450ms : 0ms; }
-    // Масштаб идёт ступенями по 2,5%: у каждого промежуточного размера свои глифы,
-    // и плавная анимация растеризовала бы строку заново в каждом кадре и раздувала кэш.
+    animate alpha { duration: App.motion ? 300ms : 0ms; easing: ease-in-out; }
     property <float> grow: active ? 1 : 0;
-    animate grow { duration: App.motion ? 450ms : 0ms; }
+    animate grow { duration: App.motion ? 300ms : 0ms; easing: ease-in-out; }
     label := Text {
-        transform-scale: 1 + round(root.grow * 8) * 0.025;
+        transform-scale: 1 + root.grow * 0.2;
         x: parent.width * 0.1;
         width: parent.width * 0.8;
         text: root.text;
@@ -343,7 +342,7 @@ component SyncLyrics inherits Rectangle {
     property <int> epoch: App.lyrics-epoch;
     changed epoch => { free-y = 0; row-y = 0; }
     property <length> offset: scrolled ? free-y : slide-y;
-    animate offset { duration: App.motion ? 300ms : 0ms; easing: ease; }
+    animate offset { duration: App.motion ? 300ms : 0ms; easing: ease-in-out; }
     clip: true;
     // Появление — через прозрачность детей: opacity здесь стоила бы слоя на всю панель.
     property <float> appear: App.motion ? 0 : 1;
@@ -388,16 +387,22 @@ component SyncLyrics inherits Rectangle {
         height: self.preferred-height;
         spacing: 32px;
         // Отсчёт: точки до первой строки, за 3 с до неё — цифры.
-        VerticalLayout {
-            padding-bottom: root.window-width * 0.0523;
+        Rectangle {
+            property <length> intro-height: max(40px, root.window-width * 0.03125);
+            height: intro-height + root.window-width * 0.0523;
             if !root.scrolled && root.state == 0: LyricsLoader {
+                y: 0;
                 window-width: root.window-width;
                 paused: !App.playing;
                 fade: root.appear;
             }
             if !root.scrolled && root.state == 1: Text {
+                y: 0;
+                width: parent.width;
+                height: parent.intro-height;
                 text: App.lyric-counter;
                 horizontal-alignment: center;
+                vertical-alignment: center;
                 font-family: "YS Music Headline";
                 font-size: root.font;
                 font-weight: 700;

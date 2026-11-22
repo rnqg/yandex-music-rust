@@ -55,10 +55,9 @@ fn main() -> Result<(), slint::PlatformError> {
         sys::wake_existing();
         return Ok(());
     }
-    // Skia без видеокарты: память не зависит от драйвера (с OpenGL или D3D окно занимает
-    // в 2–3 раза больше). Режим работы («Плавный» или «Лёгкий») меняет только анимации
-    // и кэши и переключается на лету (gui::apply_mode).
-    let backend = slint::BackendSelector::new().backend_name("winit".into()).renderer_name("skia-software".into());
+    let cfg = config::Config::load_settings();
+    let renderer = if cfg!(target_os = "macos") && cfg.mode != "lite" { "skia" } else { "skia-software" };
+    let backend = slint::BackendSelector::new().backend_name("winit".into()).renderer_name(renderer.into());
     #[cfg(target_os = "macos")]
     let backend = {
         use slint::winit_030::winit::platform::macos::WindowAttributesExtMacOS;
@@ -75,5 +74,5 @@ fn main() -> Result<(), slint::PlatformError> {
     sys::refresh_autostart();
     // Без трея на Linux спрятанное окно было бы не вернуть.
     let start_hidden = cfg!(windows) && std::env::args().any(|a| a == "--tray");
-    gui::run(start_hidden)
+    gui::run(start_hidden, cfg)
 }

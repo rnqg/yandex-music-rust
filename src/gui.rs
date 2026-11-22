@@ -233,6 +233,13 @@ impl Ctx {
         app.set_has_track(started && s.track.is_some());
         app.set_playing(s.playing);
         app.set_loading(s.loading);
+        #[cfg(target_os = "macos")]
+        app.set_smooth_progress(
+            started && s.playing && !s.loading && !self.window_occluded.get() && !ui.window().is_minimized()
+                && s.duration == app.get_duration()
+                && s.track.as_ref().is_some_and(|track| track.id == app.get_track_id().as_str())
+                && (0.0..=0.5).contains(&(s.position - app.get_position())),
+        );
         app.set_position(s.position);
         app.set_duration(s.duration);
         app.set_volume(s.volume);
@@ -1806,8 +1813,7 @@ fn set_icons(ui: &AppWindow, sprite: &Sprite) {
     icons.set_upload(get("upload_xxs"));
 }
 
-pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
-    let cfg = Config::load_settings();
+pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> {
     let saved_login = cfg.has_saved_login().then(|| cfg.clone());
     crate::api::set_lang(&cfg.lang);
     crate::i18n::set_lang(&cfg.lang);
@@ -2139,6 +2145,7 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
             pl.normal.set(Some((window_pos(w), w.size(), was_max)));
             app.set_mini(true);
             app.set_maximized(false);
+            let mini_size = LogicalSize::new(420.0, 120.0);
             // KWin в ответ на set_maximized(false) присылает текущий размер и перебивает размер плашки.
             if was_max {
                 w.set_maximized(false);
@@ -2148,9 +2155,9 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
                 if was_max {
                     ww.set_maximized(false);
                 }
-                ww.set_min_inner_size(Some(LogicalSize::new(320.0, 88.0)));
+                ww.set_min_inner_size(Some(LogicalSize::new(320.0, mini_size.height)));
             });
-            w.set_size(slint::LogicalSize::new(400.0, 88.0));
+            w.set_size(mini_size);
             // Композитор на Linux возвращает размер развёрнутого окна уже после нашего запроса.
             #[cfg(target_os = "linux")]
             {
@@ -2158,13 +2165,13 @@ pub fn run(start_hidden: bool) -> Result<(), slint::PlatformError> {
                 Timer::single_shot(Duration::from_millis(150), move || {
                     let Some(ui) = weak.upgrade() else { return };
                     let w = ui.window();
-                    if ui.global::<App>().get_mini() && w.size().height as f32 > 120.0 * w.scale_factor() {
-                        w.set_size(slint::LogicalSize::new(400.0, 88.0));
+                    if ui.global::<App>().get_mini() && w.size().height as f32 > (mini_size.height + 32.0) * w.scale_factor() {
+                        w.set_size(mini_size);
                     }
                 });
             }
             let k = w.scale_factor();
-            let (mw, mh, gap) = ((400.0 * k) as i32, (88.0 * k) as i32, (16.0 * k) as i32);
+            let (mw, mh, gap) = ((mini_size.width * k) as i32, (mini_size.height * k) as i32, (16.0 * k) as i32);
             let (l, t, r, b) = sys::work_area(w);
             let p = pl.mini.get().unwrap_or(slint::PhysicalPosition::new(r - mw - gap, b - mh - gap));
             w.set_position(slint::PhysicalPosition::new(p.x.min(r - mw).max(l), p.y.min(b - mh).max(t)));
@@ -3216,7 +3223,7 @@ impl Ctx {
             "mode:smooth" | "mode:lite" => {
                 let lite = id == "mode:lite";
                 apply_mode(&ui, lite);
-                self.lite.set(lite);
+                let changed = self.lite.replace(lite) != lite;
                 self.images.set_lite(lite);
                 if lite {
                     sys::release_memory();
@@ -3224,6 +3231,10 @@ impl Ctx {
                 let mut st = self.st.borrow_mut();
                 st.cfg.mode = if lite { "lite" } else { "smooth" }.to_string();
                 st.cfg.save();
+                drop(st);
+                if cfg!(target_os = "macos") && changed {
+                    self.toast("Режим применится полностью после перезапуска");
+                }
             }
             "less-ai" => {
                 let on = !app.get_less_ai();
