@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 const CHUNKS: &str = "app/_next/static/chunks";
 const WORKER_PREFIX: &str = "Lyogcm9sbHVwLXBsdWdpbi13ZWI";
 const TEMPLATE_PREFIX: &str = r"`\nprecision highp float;\n\nuniform vec2 vScreenSize;";
-const SIDE: i32 = 650;
+const SIDE: i32 = 448;
 const RENDERER_IDLE: Duration = Duration::from_secs(2);
 type Palette = [[f32; 3]; 6];
 
@@ -60,7 +60,7 @@ impl WaveVisual {
             }
             return;
         }
-        let interval = crate::sys::frame_interval();
+        let interval = crate::sys::wave_frame_interval();
         if self.timer.running() {
             if self.timer.interval() != interval {
                 self.timer.set_interval(interval);

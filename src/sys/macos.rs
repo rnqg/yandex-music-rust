@@ -1,9 +1,10 @@
 use objc2::MainThreadMarker;
 use objc2_app_kit::{
-    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSModalResponseOK, NSOpenPanel,
+    NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication, NSModalResponseOK, NSOpenPanel, NSView, NSWorkspace,
 };
-use objc2_foundation::{NSArray, NSBundle, NSProcessInfo, NSString, NSURL};
+use objc2_foundation::{NSArray, NSBundle, NSPoint, NSProcessInfo, NSRect, NSSize, NSString, NSURL};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
+use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use slint::winit_030::WinitWindowAccessor;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::os::unix::fs::OpenOptionsExt;
@@ -30,14 +31,52 @@ pub fn scale(w: &slint::Window) -> f32 {
         .unwrap_or(1.0)
 }
 
-pub fn frame_interval() -> std::time::Duration {
+pub fn wave_frame_interval() -> std::time::Duration {
     let rate = MainThreadMarker::new()
         .and_then(|mtm| NSApplication::sharedApplication(mtm).keyWindow())
         .and_then(|window| window.screen())
         .map(|screen| screen.maximumFramesPerSecond())
         .filter(|rate| *rate > 0)
         .unwrap_or(60);
-    std::time::Duration::from_secs_f64(1.0 / rate.clamp(24, 120) as f64)
+    std::time::Duration::from_secs_f64(1.0 / rate.clamp(24, 60) as f64)
+}
+
+pub fn animate_window_frame(
+    w: &slint::Window,
+    size: slint::LogicalSize,
+    position: Option<slint::PhysicalPosition>,
+) -> bool {
+    if NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion() {
+        return false;
+    }
+    w.with_winit_window(|window| {
+        if window.fullscreen().is_some() {
+            return None;
+        }
+        let RawWindowHandle::AppKit(handle) = window.window_handle().ok()?.as_raw() else { return None };
+        let view = unsafe { handle.ns_view.cast::<NSView>().as_ref() };
+        let native = view.window()?;
+        let current = native.frame();
+        let mut frame = native.frameRectForContentRect(NSRect::new(NSPoint::ZERO, NSSize::new(f64::from(size.width), f64::from(size.height))));
+        frame.origin.x = current.origin.x;
+        frame.origin.y = current.origin.y + current.size.height - frame.size.height;
+        if let Some(position) = position {
+            let monitor = window.current_monitor()?;
+            let origin = monitor.position();
+            let bounds = monitor.size();
+            if position.x < origin.x || position.x >= origin.x.saturating_add(bounds.width as i32)
+                || position.y < origin.y || position.y >= origin.y.saturating_add(bounds.height as i32)
+            {
+                return None;
+            }
+            let outer = window.outer_position().ok()?;
+            let scale = window.scale_factor();
+            frame.origin.x += (f64::from(position.x) - f64::from(outer.x)) / scale;
+            frame.origin.y -= (f64::from(position.y) - f64::from(outer.y)) / scale;
+        }
+        native.setFrame_display_animate(frame, true, true);
+        Some(())
+    }).flatten().is_some()
 }
 
 pub fn work_area(w: &slint::Window) -> (i32, i32, i32, i32) {

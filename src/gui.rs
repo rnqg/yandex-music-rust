@@ -2174,7 +2174,19 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
                 }
                 ww.set_min_inner_size(Some(LogicalSize::new(320.0, mini_size.height)));
             });
-            w.set_size(mini_size);
+            let k = w.scale_factor();
+            let (mw, mh, gap) = ((mini_size.width * k) as i32, (mini_size.height * k) as i32, (16.0 * k) as i32);
+            let (l, t, r, b) = sys::work_area(w);
+            let position = pl.mini.get().unwrap_or(slint::PhysicalPosition::new(r - mw - gap, b - mh - gap));
+            let position = slint::PhysicalPosition::new(position.x.min(r - mw).max(l), position.y.min(b - mh).max(t));
+            #[cfg(target_os = "macos")]
+            let animated = !was_max && app.get_motion() && sys::animate_window_frame(w, mini_size, Some(position));
+            #[cfg(not(target_os = "macos"))]
+            let animated = false;
+            if !animated {
+                w.set_size(mini_size);
+                w.set_position(position);
+            }
             // Композитор на Linux возвращает размер развёрнутого окна уже после нашего запроса.
             #[cfg(target_os = "linux")]
             {
@@ -2187,19 +2199,23 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
                     }
                 });
             }
-            let k = w.scale_factor();
-            let (mw, mh, gap) = ((mini_size.width * k) as i32, (mini_size.height * k) as i32, (16.0 * k) as i32);
-            let (l, t, r, b) = sys::work_area(w);
-            let p = pl.mini.get().unwrap_or(slint::PhysicalPosition::new(r - mw - gap, b - mh - gap));
-            w.set_position(slint::PhysicalPosition::new(p.x.min(r - mw).max(l), p.y.min(b - mh).max(t)));
         } else {
             pl.mini.set(window_pos(w).or(pl.mini.get()));
+            let normal = pl.normal.take();
+            #[cfg(target_os = "macos")]
+            let animated = app.get_motion() && normal.is_some_and(|(position, size, max)| {
+                !max && sys::animate_window_frame(w, size.to_logical(w.scale_factor()), position)
+            });
+            #[cfg(not(target_os = "macos"))]
+            let animated = false;
             app.set_mini(false);
             w.with_winit_window(|ww| ww.set_min_inner_size(Some(LogicalSize::new(960.0, 640.0))));
-            match pl.normal.take() {
+            match normal {
                 Some((pos, size, max)) => {
-                    w.set_size(if max { pl.restored.get().unwrap_or(size) } else { size });
-                    if let Some(pos) = pos {
+                    if !animated {
+                        w.set_size(if max { pl.restored.get().unwrap_or(size) } else { size });
+                    }
+                    if let Some(pos) = pos.filter(|_| !animated) {
                         w.set_position(pos);
                         // Оконный менеджер X11 может сдвинуть окно, пока применяет новый размер.
                         #[cfg(target_os = "linux")]

@@ -57,7 +57,7 @@ secret-service = { version = "5.2", default-features = false, features = ["rt-as
 arboard = { version = "3.7", default-features = false }
 slint = { version = "1.18", default-features = false, features = ["accessibility"] }
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSAppearance", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSAppearance", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSProcessInfo", "NSString", "NSURL"] }
 objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLCommandQueue", "MTLDevice"] }
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
