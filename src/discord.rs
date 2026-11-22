@@ -146,12 +146,14 @@ fn activity(t: &Track, start: i64, end: Option<i64>, with_display_type: bool) ->
     };
     let mut a = json!({
         "type": 2, // «Слушает»
+        "name": env!("APP_NAME"),
         "details": fit(&t.title, "Без названия"),
+        "details_url": url,
         "state": fit(&t.artists, "Моя волна"),
         "timestamps": { "start": start },
         "buttons": [
             { "label": "Слушать в Яндекс Музыке", "url": url },
-            { "label": env!("APP_NAME"), "url": PROJECT_URL },
+            { "label": "GitHub", "url": PROJECT_URL },
         ],
     });
     if let Some(end) = end {
@@ -226,7 +228,7 @@ impl Discord {
                     Ok(c) => {
                         conn = Some(c);
                         shown = None;
-                        self.set_status("Подключено, статус виден в профиле");
+                        self.set_status("Подключено, ожидает воспроизведения");
                     }
                     Err(e) => {
                         self.set_status(e);
@@ -238,7 +240,7 @@ impl Discord {
             let Some(c) = conn.as_mut() else { continue };
 
             let s = player.state();
-            let want = if s.status == Status::Ready && s.playing && !s.loading { s.track.clone() } else { None };
+            let want = if s.status == Status::Ready && s.playing && !s.loading { s.track } else { None };
             let res = match want {
                 Some(t) => {
                     let start = now_ms() - (s.position * 1000.0) as i64;
@@ -259,11 +261,13 @@ impl Discord {
                         match r {
                             Ok(None) => {
                                 shown = Some((t.id.clone(), start));
+                                self.set_status("Статус отправлен в Discord");
                                 Ok(())
                             }
                             Ok(Some(msg)) => {
                                 log(format!("discord SET_ACTIVITY: {msg}"));
                                 shown = Some((t.id.clone(), start)); // не долбим Discord повторами
+                                self.set_status("Discord не принял статус");
                                 Ok(())
                             }
                             Err(e) => Err(e),
@@ -272,7 +276,13 @@ impl Discord {
                 }
                 None if shown.is_some() => {
                     shown = None;
-                    c.set_activity(Value::Null).map(|_| ())
+                    c.set_activity(Value::Null).map(|error| match error {
+                        Some(msg) => {
+                            log(format!("discord SET_ACTIVITY: {msg}"));
+                            self.set_status("Discord не снял статус");
+                        }
+                        None => self.set_status("Подключено, ожидает воспроизведения"),
+                    })
                 }
                 None => Ok(()),
             };

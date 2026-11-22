@@ -823,7 +823,10 @@ export component WavePage inherits Rectangle {
             y: 0;
             width: parent.width - 64px;
             height: parent.has-action ? 41px : parent.height;
+            clip: true;
             Text {
+                width: parent.width;
+                height: parent.height;
                 text: fact;
                 wrap: word-wrap;
                 overflow: elide;
@@ -850,6 +853,8 @@ export component WavePage inherits Rectangle {
             accessible-label: App.wave-message.action-title;
             accessible-action-default => { App.open-wave-message(); }
             Text {
+                width: parent.width;
+                height: parent.height;
                 text: App.wave-message.action-title;
                 overflow: elide;
                 font-family: WaveType.body;
