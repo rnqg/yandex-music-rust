@@ -113,6 +113,7 @@ struct Ctx {
     discord: Arc<crate::discord::Discord>,
     images: Images,
     lyric_tick: Timer,
+    volume_save: Timer,
     #[cfg(target_os = "macos")]
     wave_visual: Rc<wave_visual::WaveVisual>,
     #[cfg(target_os = "macos")]
@@ -229,7 +230,10 @@ impl Ctx {
             self.on_ready(&s.uid);
         }
 
-        let started = self.st.borrow().started;
+        let (started, volume) = {
+            let st = self.st.borrow();
+            (st.started, st.cfg.volume)
+        };
         app.set_has_track(started && s.track.is_some());
         app.set_playing(s.playing);
         app.set_loading(s.loading);
@@ -242,7 +246,7 @@ impl Ctx {
         );
         app.set_position(s.position);
         app.set_duration(s.duration);
-        app.set_volume(s.volume);
+        app.set_volume(volume);
         app.set_shuffle(s.shuffle);
         app.set_repeat(match s.repeat {
             Repeat::Off => 0,
@@ -287,6 +291,10 @@ impl Ctx {
         let showing_lyrics = app.get_fullscreen() && app.get_fs_mode() == 2;
         if showing_lyrics {
             self.sync_lyrics();
+        }
+        if !app.get_fullscreen() && app.get_cover_big().size().width > 0 {
+            app.set_cover_big(Image::default());
+            self.images.trim();
         }
         self.sync_lyric_timer(showing_lyrics && s.playing);
         let Some(t) = s.track.filter(|_| started) else {
@@ -1892,6 +1900,7 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
         discord,
         images: Images::new(lite),
         lyric_tick: Timer::default(),
+        volume_save: Timer::default(),
         #[cfg(target_os = "macos")]
         wave_visual: Rc::new(wave_visual::WaveVisual::new(player.eq.spectrum.clone())),
         #[cfg(target_os = "macos")]
@@ -1996,13 +2005,21 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
     });
     let p = player.clone();
     app.on_toggle_shuffle(move || p.send(Cmd::Shuffle(!p.state().shuffle)));
-    let p = player.clone();
-    app.on_set_volume(move |v| {
-        p.send(Cmd::Volume(v));
-        with_ctx(|c| {
-            let mut st = c.st.borrow_mut();
-            st.cfg.volume = v;
-            st.cfg.save();
+    app.on_set_volume(|volume| {
+        if !volume.is_finite() {
+            return;
+        }
+        with_ctx(|ctx| {
+            let volume = volume.clamp(0.0, 1.0);
+            if ctx.st.borrow().cfg.volume == volume {
+                return;
+            }
+            ctx.st.borrow_mut().cfg.volume = volume;
+            ctx.ui().global::<App>().set_volume(volume);
+            ctx.player.send(Cmd::Volume(volume));
+            ctx.volume_save.start(TimerMode::SingleShot, Duration::from_millis(250), || {
+                with_ctx(|ctx| ctx.st.borrow().cfg.save());
+            });
         });
     });
     app.on_format_time(|s| mmss(s).into());
@@ -2360,6 +2377,9 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
         ctx.login_start();
     }
     slint::run_event_loop_until_quit()?;
+    if ctx.volume_save.running() {
+        ctx.st.borrow().cfg.save();
+    }
     save_places(&ui, &places);
     #[cfg(target_os = "macos")]
     drop(media);
@@ -3754,7 +3774,10 @@ impl Ctx {
             with_ctx(|c| {
                 if c.st.borrow().track_id.as_deref() == Some(id.as_str()) {
                     if let Some(ui) = w.upgrade() {
-                        ui.global::<App>().set_cover_big(img.clone());
+                        let app = ui.global::<App>();
+                        if app.get_fullscreen() {
+                            app.set_cover_big(img.clone());
+                        }
                     }
                 }
             })

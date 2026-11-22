@@ -33,7 +33,7 @@ assets="$root/packaging/macos"
 name="$(plutil -extract CFBundleName raw -o - "$assets/Info.plist")"
 executable="$(plutil -extract CFBundleExecutable raw -o - "$assets/Info.plist")"
 binary="$CARGO_TARGET_DIR/release/$executable"
-lipo -verify_arch arm64 "$binary"
+lipo "$binary" -verify_arch arm64
 app="$work/image/$name.app"
 version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$work/AppIcon.iconset"

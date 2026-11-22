@@ -124,7 +124,7 @@ component Poster inherits Rectangle {
             height: 400px;
             radius: Theme.radius-size-m;
             background: #ffffff14;
-            source: App.cover-big;
+            source: App.cover-big.width > 0 ? App.cover-big : App.cover;
         }
         hover := TouchArea {
         if hover.has-hover: Rectangle {
