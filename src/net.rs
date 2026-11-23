@@ -241,11 +241,12 @@ impl Net {
         let (api, player, id, name, me) = (self.api.clone(), player.clone(), id.to_string(), name.to_string(), self.clone());
         std::thread::spawn(move || match api.artist_tracks(&id) {
             Ok(tracks) => {
-                let start = start.and_then(|s| tracks.iter().position(|t| t.id == s)).unwrap_or(0);
+                let row = start.and_then(|s| tracks.iter().position(|t| t.id == s));
                 player.send(Cmd::PlayList {
                     source: Source::List { kind: ListKind::Artist, id, title: name },
                     tracks,
-                    start,
+                    start: row.unwrap_or(0),
+                    selected: row.is_some(),
                     after: After::Loop,
                 });
             }

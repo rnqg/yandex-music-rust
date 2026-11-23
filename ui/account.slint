@@ -255,7 +255,20 @@ component SettingItem inherits Rectangle {
     }
     if toggle: Toggle { x: parent.width - 32px; on: on; }
     if !toggle: Icon { x: parent.width - 24px; source: Icons.arrow-right; size: 24px; colorize: Theme.controls-color-primary-text-enabled; }
-    TouchArea {
+    if root.toggle: TouchArea {
+        accessible-role: switch;
+        accessible-label: root.title;
+        accessible-description: root.desc;
+        accessible-checked: root.on;
+        accessible-action-default => { root.clicked(); }
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    if !root.toggle: TouchArea {
+        accessible-role: button;
+        accessible-label: root.title;
+        accessible-description: root.desc;
+        accessible-action-default => { root.clicked(); }
         mouse-cursor: MouseCursor.pointer;
         clicked => { root.clicked(); }
     }
@@ -374,6 +387,80 @@ export component SettingsPage inherits Rectangle {
                 on: App.download-flac;
                 clicked => { App.setting("download-flac"); }
             }
+            VerticalLayout {
+                spacing: 16px;
+                Text {
+                    text: T.t("Воспроизведение");
+                    font-family: Theme.display-font;
+                    font-size: Theme.font-size-headline-xs;
+                    font-weight: 700;
+                    color: Theme.controls-color-primary-text-enabled-variant;
+                }
+                SettingItem {
+                    title: T.t("Без повторов в Моей волне");
+                    desc: T.t("Один и тот же трек может вернуться через 24 часа");
+                    toggle: true;
+                    on: App.unique-wave;
+                    clicked => { App.setting("unique-wave"); }
+                }
+                SettingItem {
+                    title: T.t("Пропускать изменённую скорость");
+                    desc: T.t("Ускоренные и замедленные версии в рекомендациях");
+                    toggle: true;
+                    on: App.skip-speed;
+                    clicked => { App.setting("skip-speed"); }
+                }
+                SettingItem {
+                    title: T.t("Пропускать ремиксы");
+                    desc: T.t("В рекомендациях");
+                    toggle: true;
+                    on: App.skip-remix;
+                    clicked => { App.setting("skip-remix"); }
+                }
+                SettingItem {
+                    title: T.t("Пропускать концертные версии");
+                    desc: T.t("В рекомендациях");
+                    toggle: true;
+                    on: App.skip-live;
+                    clicked => { App.setting("skip-live"); }
+                }
+                SettingItem {
+                    title: T.t("Останавливать в конце списка");
+                    desc: T.t("После последнего трека альбома или плейлиста");
+                    toggle: true;
+                    on: App.stop-at-end;
+                    clicked => { App.setting("stop-at-end"); }
+                }
+                SettingItem {
+                    title: T.t("Блокировать и совместные треки");
+                    desc: T.t("Если заблокированный артист указан в числе исполнителей");
+                    toggle: true;
+                    on: App.block-features;
+                    clicked => { App.setting("block-features"); }
+                }
+                SettingItem {
+                    title: T.t("Плавный переход");
+                    desc: T.t("Сведение в бит. Часть тихого вступления может быть пропущена");
+                    toggle: true;
+                    on: App.crossfade;
+                    clicked => { App.setting("crossfade"); }
+                }
+                if App.crossfade: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for seconds in [3, 6, 9, 12]: PillButton {
+                        text: seconds + " с";
+                        height: 32px;
+                        primary: seconds == App.crossfade-seconds;
+                        clicked => { App.set-crossfade-seconds(seconds); }
+                    }
+                }
+                for artist in App.blocked-artists: SettingItem {
+                    title: artist.text;
+                    desc: T.t("Разблокировать исполнителя");
+                    clicked => { App.setting("unblock:" + artist.id); }
+                }
+            }
             if App.hidden-blocks != "": SettingItem {
                 title: T.t("Вернуть скрытые блоки");
                 desc: App.hidden-blocks;
@@ -381,14 +468,14 @@ export component SettingsPage inherits Rectangle {
             }
             SettingItem {
                 title: T.t("Меньше ИИ");
-                desc: T.t("В рекомендациях будет реже встречаться музыка, созданная с помощью ИИ");
+                desc: T.t("Реже включать треки, созданные с помощью ИИ");
                 toggle: true;
                 on: App.less-ai;
                 clicked => { App.setting("less-ai"); }
             }
             SettingItem {
                 title: T.t("Статус в Discord");
-                desc: App.discord-on && App.discord-status != "" ? App.discord-status : T.t("Показывать в профиле Discord, что вы слушаете");
+                desc: App.discord-on && App.discord-status != "" ? App.discord-status : T.t("Показывать текущий трек в профиле Discord");
                 toggle: true;
                 on: App.discord-on;
                 clicked => { App.setting("discord"); }
@@ -492,145 +579,99 @@ export component AboutDialog inherits Rectangle {
 export component LoginScreen inherits Rectangle {
     background: Theme.background-color-primary-enabled-basic;
     property <brush> ink: Theme.controls-color-primary-text-enabled-variant;
-    property <brush> ink2: Theme.controls-color-primary-text-enabled;
-    property <float> appear: App.motion ? 0 : 1;
-    opacity: appear;
-    init => { appear = 1; }
-    animate appear { duration: App.motion ? 300ms : 0ms; easing: ease-out; }
+    property <brush> secondary: Theme.controls-color-primary-text-enabled;
+    property <bool> ready: !App.restoring-login && App.login-code != "";
+    property <bool> failed: !App.restoring-login && App.login-error != "";
     TouchArea { }
 
-    if App.restoring-login: Text {
-        text: T.t("Загрузка…");
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        font-size: Theme.font-size-label-l;
-        color: root.ink;
-    }
-
-    if App.macos && !App.restoring-login: Rectangle {
-        x: 24px;
-        y: 24px;
-        width: parent.width * 0.36 - 24px;
-        height: parent.height - 48px;
-        border-radius: 24px;
-        background: #121212;
-        for radius in [400px, 328px, 256px, 184px]: Rectangle {
-            width: min(radius, parent.width - 16px);
-            height: self.width;
-            border-radius: self.width / 2;
-            border-width: 1px;
-            border-color: #ffff0028;
-        }
-        MusicMark { width: 96px; height: 96px; }
-    }
-
-    if !App.restoring-login: VerticalLayout {
-        x: (parent.width - self.width) / 2 + (App.macos ? parent.width * 0.18 : 0px);
-        y: (parent.height - self.preferred-height) / 2 + (1 - root.appear) * 16px;
-        width: 440px;
-        spacing: 0;
-        alignment: start;
-        if !App.macos: Rectangle {
-            height: 40px;
-            Image {
-                x: (parent.width - self.width) / 2;
-                height: 32px;
-                source: Theme.dark ? Icons.logo-dark : Icons.logo;
-            }
-        }
-        if !App.macos: Rectangle { height: 32px; }
-        Text {
-            text: T.t("Войдите в Яндекс Музыку");
-            horizontal-alignment: center;
-            font-family: Theme.display-font;
-            font-size: Theme.font-size-headline-xl;
-            font-weight: 700;
-            color: root.ink;
-        }
-        Rectangle { height: 12px; }
-        if !App.login-retry: Text {
-            text: App.login-code == "" ? T.t("Нужен аккаунт Яндекса. Код для входа появится через пару секунд")
-                : T.t("Откройте ya.ru/device в браузере на компьютере или телефоне и введите код");
-            wrap: word-wrap;
-            horizontal-alignment: center;
-            font-size: Theme.font-size-label-l;
-            font-weight: 500;
-            color: root.ink2;
-        }
-        Rectangle { height: 32px; }
-        Rectangle {
-            height: 96px;
-            border-radius: Theme.radius-size-xl;
-            background: Theme.controls-color-secondary-default-enabled;
-            if App.login-code == "" && App.login-error == "": Text {
-                text: "• • •";
-                font-size: 32px;
-                font-weight: 700;
-                color: root.ink2;
-            }
-            if App.login-code != "": HorizontalLayout {
-                alignment: center;
-                spacing: 6px;
-                for ch in App.login-code-chars: Rectangle {
-                    width: 40px;
+    panel := Rectangle {
+        width: min(448px, parent.width - 48px);
+        height: content.preferred-height;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        background: Theme.background-color-primary-enabled-popover;
+        border-radius: 26px;
+        content := VerticalLayout {
+            padding: 32px;
+            spacing: 0;
+            HorizontalLayout {
+                height: 48px;
+                alignment: start;
+                spacing: 12px;
+                MusicMark { width: 48px; height: 48px; }
+                VerticalLayout {
+                    alignment: center;
                     Text {
-                        text: ch;
+                        text: App.app-name;
                         font-family: Theme.display-font;
-                        font-size: 44px;
-                        font-weight: 700;
+                        font-size: 20px; font-weight: 700;
                         color: root.ink;
+                    }
+                    Text {
+                        text: T.t("Независимый клиент");
+                        font-size: Theme.font-size-label-s;
+                        color: root.secondary;
                     }
                 }
             }
-            if App.login-code == "" && App.login-error != "": Text {
-                x: 16px;
-                width: parent.width - 32px;
-                text: App.login-error;
+            Rectangle { height: 24px; }
+            Rectangle { height: 1px; background: Theme.controls-color-secondary-outline-enabled-stroke; }
+            Rectangle { height: 24px; }
+            Text {
+                text: App.restoring-login ? T.t("Проверяем вход") : T.t("Вход по коду");
+                font-family: Theme.display-font;
+                font-size: Theme.font-size-headline-xl;
+                font-weight: 700;
+                color: root.ink;
+            }
+            Rectangle { height: 8px; }
+            Text {
+                text: App.restoring-login ? T.t("Подключаем сохранённый аккаунт…")
+                    : root.failed ? App.login-error
+                    : root.ready ? T.t("Введите этот код на ya.ru/device с компьютера или телефона.")
+                    : T.t("Получаем код у Яндекса…");
                 wrap: word-wrap;
-                horizontal-alignment: center;
                 font-size: Theme.font-size-label-m;
-                font-weight: 500;
-                color: root.ink2;
+                color: root.secondary;
+            }
+            if root.ready: Rectangle { height: 20px; }
+            if root.ready: Rectangle {
+                height: 72px;
+                border-radius: 12px;
+                background: Theme.controls-color-secondary-default-enabled;
+                Text {
+                    text: App.login-code;
+                    font-family: "Menlo"; font-weight: 700;
+                    font-size: App.login-code.character-count > 10 ? 24px : 32px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    color: root.ink;
+                }
+            }
+            if root.ready || root.failed: Rectangle { height: 20px; }
+            if root.ready || root.failed: HorizontalLayout {
+                alignment: start;
+                spacing: 8px;
+                if root.ready: PillButton {
+                    primary: true; text: T.t("Открыть ya.ru/device");
+                    clicked => { App.login-open(); }
+                }
+                if root.ready: PillButton {
+                    text: T.t("Скопировать код"); clicked => { App.login-copy(); }
+                }
+                if root.failed: PillButton {
+                    primary: true;
+                    text: App.login-retry ? T.t("Повторить") : T.t("Получить новый код");
+                    clicked => { App.login-start(); }
+                }
+            }
+            if root.ready: Rectangle { height: 16px; }
+            if root.ready: Text {
+                text: T.t("После подтверждения музыка откроется здесь.");
+                wrap: word-wrap;
+                font-size: Theme.font-size-label-s;
+                color: root.secondary;
             }
         }
-        Rectangle { height: 24px; }
-        HorizontalLayout {
-            alignment: center;
-            spacing: 8px;
-            if App.login-code != "": PillButton {
-                primary: true;
-                text: T.t("Открыть ya.ru/device");
-                clicked => { App.login-open(); }
-            }
-            if App.login-code != "": PillButton {
-                text: T.t("Скопировать код");
-                clicked => { App.login-copy(); }
-            }
-            if App.login-code == "" && App.login-error != "": PillButton {
-                primary: true;
-                text: App.login-retry ? T.t("Повторить") : T.t("Получить новый код");
-                clicked => { App.login-start(); }
-            }
-        }
-        Rectangle { height: 20px; }
-        if App.login-code != "": Text {
-            text: T.t("Ждём подтверждения. Код действует 5 минут");
-            horizontal-alignment: center;
-            font-size: Theme.font-size-label-s;
-            font-weight: 500;
-            color: root.ink2;
-        }
-    }
-
-    // Чтобы было видно, что это не официальное приложение: то же имя Яндекс покажет на ya.ru/device.
-    if !App.restoring-login: Text {
-        x: App.macos ? parent.width * 0.36 : 0px;
-        y: parent.height - self.height - 24px;
-        width: parent.width - self.x;
-        text: App.app-name + " · неофициальный клиент";
-        horizontal-alignment: center;
-        font-size: Theme.font-size-label-s;
-        font-weight: 500;
-        color: root.ink2;
     }
 }

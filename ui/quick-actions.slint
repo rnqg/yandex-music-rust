@@ -1,0 +1,77 @@
+import { App, T } from "state.slint";
+import { Theme } from "theme.slint";
+import { Field, Icon, Icons } from "widgets.slint";
+
+export component QuickActions inherits Rectangle {
+    width: 100%;
+    height: 100%;
+    background: Theme.background-color-primary-enabled-overlay;
+    init => { field.focus(); }
+    TouchArea { clicked => { App.quick-toggle(); } }
+    panel := Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: min(140px, parent.height / 6);
+        width: min(520px, parent.width - 48px);
+        height: 76px + max(1, App.quick-items.length) * 48px;
+        border-radius: Theme.radius-size-xxl;
+        background: Theme.background-color-primary-enabled-popover;
+        TouchArea { }
+        Icon { x: 22px; y: 19px; source: Icons.search; size: 24px; colorize: Theme.controls-color-primary-text-enabled; }
+        if App.quick-text == "": Text {
+            x: 58px; y: 0px; height: 64px;
+            text: T.t("Трек, исполнитель или плейлист");
+            color: Theme.controls-color-primary-text-enabled;
+            vertical-alignment: center;
+        }
+        field := Field {
+            x: 58px; y: 0px; width: parent.width - 80px; height: 64px;
+            accessible-label: T.t("Быстрые действия");
+            text <=> App.quick-text;
+            single-line: true;
+            vertical-alignment: center;
+            color: Theme.controls-color-primary-text-enabled-variant;
+            edited => { App.quick-edited(self.text); }
+            escape => { App.quick-toggle(); }
+        }
+        Rectangle { x: 16px; y: 63px; width: parent.width - 32px; height: 1px; background: Theme.controls-color-secondary-default-enabled; }
+        if App.quick-items.length == 0: Text {
+            x: 22px; y: 68px; height: 44px;
+            text: App.quick-status;
+            font-size: Theme.font-size-label-m;
+            color: Theme.controls-color-primary-text-enabled;
+            vertical-alignment: center;
+        }
+        for item[i] in App.quick-items: Rectangle {
+            x: 8px; y: 68px + i * 48px;
+            width: parent.width - 16px;
+            height: 44px;
+            border-radius: Theme.radius-size-l;
+            background: ta.has-hover || App.quick-index == i ? Theme.controls-color-secondary-default-hovered : transparent;
+            accessible-role: button;
+            accessible-label: item.text;
+            accessible-action-default => { App.quick-pick(i, false); }
+            Icon { x: 14px; source: item.icon; size: 22px; colorize: Theme.controls-color-primary-text-enabled; }
+            Text {
+                x: 50px;
+                width: parent.width - self.x - (item.submenu ? 56px : 16px);
+                text: item.text;
+                font-size: Theme.font-size-label-m;
+                font-weight: 500;
+                overflow: elide;
+                color: Theme.controls-color-primary-text-enabled-variant;
+            }
+            ta := TouchArea { mouse-cursor: pointer; clicked => { App.quick-pick(i, false); } }
+            if item.submenu: Rectangle {
+                x: parent.width - 44px;
+                width: 38px; height: 36px;
+                border-radius: Theme.radius-size-m;
+                background: enqueue.has-hover ? Theme.controls-color-secondary-default-hovered : transparent;
+                accessible-role: button;
+                accessible-label: T.t("Играть следующим") + " · " + item.text;
+                accessible-action-default => { App.quick-pick(i, true); }
+                Icon { size: 20px; source: Icons.m-play-next; colorize: Theme.controls-color-primary-text-enabled-variant; }
+                enqueue := TouchArea { mouse-cursor: pointer; clicked => { App.quick-pick(i, true); } }
+            }
+        }
+    }
+}

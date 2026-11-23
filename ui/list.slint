@@ -315,7 +315,7 @@ export component ListPage inherits Rectangle {
             y: buttons-y;
             height: 40px;
             spacing: 12px;
-            HeaderButton { primary: true; icon: Icons.play-small; text: T.t("Слушать"); clicked => { App.play-list(0); } }
+            HeaderButton { primary: true; icon: Icons.play-small; text: T.t("Слушать"); clicked => { App.play-list(-1); } }
             if playlist: HeaderButton { icon: Icons.trailer-small; text: T.t("Трейлер"); clicked => { App.list-trailer(); } }
             if album: HeaderButton { icon: App.list-liked ? Icons.liked-small : Icons.like-small; text: App.list-likes; clicked => { App.list-like(); } }
             if playlist: HeaderButton { icon: App.list-liked ? Icons.liked-small : Icons.like-small; text: App.list-likes; clicked => { App.list-like(); } }

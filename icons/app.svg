@@ -1,5 +1,5 @@
 <!-- Логотип Яндекс Музыки RS. Шестерёнка — логотип Rust (Rust Foundation, CC-BY 4.0),
-     звезда своя. Из этого файла собраны icons/app.ico, packaging/icons/*.png и docs/logo.png. -->
+     звезда своя. Из этого файла собраны icons/app.ico, packaging/icons/*.png. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="-64 -64 128 128">
 <rect x="-64" y="-64" width="128" height="128" rx="28" fill="#000000"/>
 <g transform="scale(0.86)">

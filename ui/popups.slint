@@ -1,7 +1,8 @@
 // Всплывающие окна: громкость, меню трека, настройки звука и эквалайзер.
 
 import { Theme } from "theme.slint";
-import { Icons, Icon } from "widgets.slint";
+import { ParametricEq } from "parametric-eq.slint";
+import { Icons, Icon, PillButton } from "widgets.slint";
 import { T, App, MenuEntry } from "state.slint";
 
 // Вертикальный ползунок громкости над кнопкой: 44×216, радиус 24.
@@ -330,6 +331,8 @@ export component SoundSettings inherits Rectangle {
     drop-shadow-offset-y: 1px;
     drop-shadow-color: Theme.dark ? #0000007a : #0000003d;
     property <bool> presets-open;
+    property <bool> advanced;
+    property <int> band: 4;
     TouchArea { }
 
     Text {
@@ -356,7 +359,7 @@ export component SoundSettings inherits Rectangle {
         }
     }
 
-    QualityItem {
+    if !advanced: QualityItem {
         x: 1px;
         y: 69px;
         width: 428px;
@@ -366,7 +369,7 @@ export component SoundSettings inherits Rectangle {
         selected: App.quality == 0;
         clicked => { App.set-quality(0); }
     }
-    QualityItem {
+    if !advanced: QualityItem {
         x: 1px;
         y: 151px;
         width: 428px;
@@ -376,7 +379,7 @@ export component SoundSettings inherits Rectangle {
         selected: App.quality == 1;
         clicked => { App.set-quality(1); }
     }
-    QualityItem {
+    if !advanced: QualityItem {
         x: 1px;
         y: 215px;
         width: 428px;
@@ -387,6 +390,15 @@ export component SoundSettings inherits Rectangle {
         clicked => { App.set-quality(2); }
     }
 
+    if advanced: ParametricEq {
+        x: 25px; y: 73px; width: 380px; height: 210px;
+        band <=> root.band;
+    }
+    PillButton {
+        x: 207px; y: 297px; height: 34px;
+        text: root.advanced ? T.t("К качеству звука") : T.t("Точная настройка");
+        clicked => { root.advanced = !root.advanced; root.presets-open = false; }
+    }
     Text {
         x: 25px;
         y: 303px;
@@ -401,6 +413,10 @@ export component SoundSettings inherits Rectangle {
         width: 32px;
         height: 20px;
         border-radius: 10px;
+        accessible-role: switch;
+        accessible-label: T.t("Эквалайзер");
+        accessible-checked: App.eq-on;
+        accessible-action-default => { App.eq-toggle(); }
         background: App.eq-on ? Theme.controls-color-primary-default-enabled : Theme.controls-color-primary-default-disabled;
         animate background { duration: App.motion ? Theme.duration-transition : 0ms; }
         Rectangle {
@@ -440,14 +456,19 @@ export component SoundSettings inherits Rectangle {
             y: 0;
             value: g;
             enabled: App.eq-on;
-            changed(v) => { App.eq-set-band(i, v); }
+            changed(v) => { root.band = i; App.eq-set-band(i, v); }
         }
         Text {
             y: 152px;
             x: (13px - self.preferred-width) / 2;
-            text: i == 0 ? "60" : i == 1 ? "170" : i == 2 ? "310" : i == 3 ? "600" : i == 4 ? "1k" : i == 5 ? "3k" : i == 6 ? "6k" : i == 7 ? "12k" : i == 8 ? "14k" : "16k";
+            property <float> hz: App.eq-frequencies[i];
+            text: hz >= 1000 ? (round(hz / 100) / 10) + "k" : round(hz);
             font-size: Theme.font-size-label-xs;
-            color: Theme.controls-color-primary-text-enabled;
+            color: root.advanced && root.band == i ? Theme.controls-color-primary-default-enabled : Theme.controls-color-primary-text-enabled;
+        }
+        if root.advanced: TouchArea {
+            x: -7px; y: 145px; width: 28px; height: 28px;
+            mouse-cursor: pointer; clicked => { root.band = i; }
         }
     }
 

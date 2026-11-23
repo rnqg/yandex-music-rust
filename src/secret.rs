@@ -136,113 +136,17 @@ mod keyring {
 }
 
 /// Префикс в config.json: секрет лежит в связке ключей, а не рядом.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(target_os = "linux")]
 const IN_KEYRING: &str = "keyring:";
 
 pub enum Opened<T = String> {
     Value(T),
     Missing,
-    #[cfg(target_os = "macos")]
-    Unavailable,
 }
 
 impl<T> Opened<T> {
     pub fn value(self) -> Option<T> {
         if let Self::Value(value) = self { Some(value) } else { None }
-    }
-}
-
-#[cfg(target_os = "macos")]
-const LOGIN_ITEM: &str = "oauth-session";
-
-#[cfg(target_os = "macos")]
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct SavedLogin {
-    pub token: Option<String>,
-    pub refresh: Option<String>,
-    pub expires: Option<u64>,
-}
-
-#[cfg(target_os = "macos")]
-pub fn read_login() -> Opened<SavedLogin> {
-    match keyring::load(LOGIN_ITEM) {
-        Opened::Value(value) => serde_json::from_str(&value).map_or(Opened::Unavailable, Opened::Value),
-        Opened::Missing => Opened::Missing,
-        Opened::Unavailable => Opened::Unavailable,
-    }
-}
-
-#[cfg(target_os = "macos")]
-pub fn store_login(login: &SavedLogin) -> bool {
-    serde_json::to_string(login).is_ok_and(|value| keyring::store(LOGIN_ITEM, &value))
-}
-
-#[cfg(target_os = "macos")]
-pub fn forget_login() {
-    keyring::remove(LOGIN_ITEM);
-}
-
-#[cfg(target_os = "macos")]
-mod keyring {
-    use super::Opened;
-    use security_framework::base::Result;
-    use security_framework::os::macos::keychain::SecKeychain;
-    use std::sync::Mutex;
-
-    static ACCESS: Mutex<()> = Mutex::new(());
-    const EXISTING_SERVICE: &str = "io.github.spolzermod.yamusic-rs.macos";
-    const ITEM_NOT_FOUND: i32 = -25300;
-    const DUPLICATE_ITEM: i32 = -25299;
-    const AUTH_FAILED: i32 = -25293;
-    const INTERACTION_NOT_ALLOWED: i32 = -25308;
-
-    fn with<R>(allow_prompt: bool, f: impl Fn(&SecKeychain) -> Result<R>) -> Result<R> {
-        let _access = ACCESS.lock().unwrap();
-        let (keychain, result) = {
-            let _without_dialogs = SecKeychain::disable_user_interaction()?;
-            let keychain = SecKeychain::default()?;
-            let result = f(&keychain);
-            (keychain, result)
-        };
-        match result {
-            Err(error)
-                if allow_prompt
-                    && matches!(error.code(), AUTH_FAILED | INTERACTION_NOT_ALLOWED | DUPLICATE_ITEM) =>
-            {
-                f(&keychain)
-            }
-            result => result,
-        }
-    }
-
-    pub fn store(name: &str, secret: &str) -> bool {
-        with(true, |keychain| keychain.set_generic_password(EXISTING_SERVICE, name, secret.as_bytes()))
-            .map_err(|error| crate::config::log(format!("Связка ключей: {error}")))
-            .is_ok()
-    }
-
-    pub fn load(name: &str) -> Opened {
-        match with(true, |keychain| {
-            let (password, _) = keychain.find_generic_password(EXISTING_SERVICE, name)?;
-            Ok(password.to_vec())
-        }) {
-            Ok(bytes) => String::from_utf8(bytes).map_or(Opened::Missing, Opened::Value),
-            Err(error) if error.code() == ITEM_NOT_FOUND => Opened::Missing,
-            Err(_) => Opened::Unavailable,
-        }
-    }
-
-    pub fn remove(name: &str) {
-        let result = with(false, |keychain| {
-            let (_, item) = keychain.find_generic_password(EXISTING_SERVICE, name)?;
-            item.delete();
-            Ok(())
-        });
-        if let Err(error) = result {
-            if error.code() != ITEM_NOT_FOUND {
-                crate::config::log(format!("Связка ключей: {error}"));
-            }
-        }
     }
 }
 
@@ -276,15 +180,11 @@ pub fn open(sealed: &str) -> Opened {
             .and_then(keyring::load)
             .map_or(Opened::Missing, Opened::Value)
     }
-    #[cfg(target_os = "macos")]
-    {
-        sealed.trim().strip_prefix(IN_KEYRING).map_or(Opened::Missing, keyring::load)
-    }
 }
 
 /// Секрет больше не нужен (вышли из аккаунта). DPAPI ничего не хранит, связку ключей чистим.
 pub fn forget(name: &str) {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(target_os = "linux")]
     keyring::remove(name);
     #[cfg(windows)]
     let _ = name;

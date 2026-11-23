@@ -92,7 +92,8 @@ impl Ctx {
         }
         let Some(sk) = sk else { return Vec::new() };
         let st = self.st.borrow();
-        let shown = |d: &&BlockDef| !st.cfg.hidden_blocks.iter().any(|h| h.id == d.id);
+        let shown = |d: &&BlockDef| !matches!(d.kind.as_str(), "CONCERTS_PERSONAL" | "CONCERTS_TOP" | "VIEWED_CONCERTS")
+            && !st.cfg.hidden_blocks.iter().any(|h| h.id == d.id);
         let mut out: Vec<BlockDef> = sk.head.iter().filter(shown).cloned().collect();
         if !sk.tabs.is_empty() {
             let key = format!("{page:?}");

@@ -321,7 +321,6 @@ export global App {
     // Моя волна: пятно, фон из палитры трека.
     in property <image> blob;
     in property <image> wave-frame;
-    in property <bool> wave-frame-enabled;
     in property <[color]> vibe-stops: [#000, #000, #000, #000, #000, #000, #000, #000, #000, #000, #000, #000, #000, #000, #000, #000];
     in property <color> vibe-edge: #000;
 
@@ -373,6 +372,10 @@ export global App {
     in property <int> quality;
     in property <bool> eq-on;
     in property <float> eq-preamp: 1;
+    in property <[float]> eq-frequencies;
+    in property <[float]> eq-q;
+    callback eq-shape(int, float, float);
+    callback eq-reset-band(int);
     in property <[float]> eq-gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
     in property <int> eq-preset: 1;
     in property <[string]> eq-presets;
@@ -507,12 +510,29 @@ export global App {
     in property <bool> restoring-login;
     in property <bool> login-retry;
     in property <string> login-code;
-    in property <[string]> login-code-chars;
     in property <string> login-error;
     callback login-start();
     callback login-open();
     callback login-copy();
     callback account-action(string);
+    in property <bool> unique-wave;
+    in property <bool> crossfade;
+    in property <int> crossfade-seconds: 6;
+    callback set-crossfade-seconds(int);
+    in property <bool> block-features;
+    in property <bool> skip-speed;
+    in property <bool> skip-remix;
+    in property <bool> skip-live;
+    in property <bool> stop-at-end;
+    in property <[MenuEntry]> blocked-artists;
+    in-out property <bool> quick-open;
+    in-out property <string> quick-text;
+    in-out property <int> quick-index;
+    in property <[MenuEntry]> quick-items;
+    in property <string> quick-status;
+    callback quick-toggle();
+    callback quick-edited(string);
+    callback quick-pick(int, bool);
     callback setting(string);
     in property <[CardItem]> ar-albums;
     in property <[CardItem]> ar-playlists;

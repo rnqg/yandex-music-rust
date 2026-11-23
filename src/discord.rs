@@ -58,7 +58,7 @@ fn now_ms() -> i64 {
 
 impl Conn {
     fn connect(app_id: &str) -> Result<Conn, String> {
-        let mut last = "Discord не запущен".to_string();
+        let mut last = "Откройте Discord, чтобы показать трек в профиле".to_string();
         for i in 0..10 {
             let Some(pipe) = open_pipe(i) else {
                 continue;
@@ -228,7 +228,7 @@ impl Discord {
                     Ok(c) => {
                         conn = Some(c);
                         shown = None;
-                        self.set_status("Подключено, ожидает воспроизведения");
+                        self.set_status("Включите трек, чтобы он появился в профиле");
                     }
                     Err(e) => {
                         self.set_status(e);
@@ -281,7 +281,7 @@ impl Discord {
                             log(format!("discord SET_ACTIVITY: {msg}"));
                             self.set_status("Discord не снял статус");
                         }
-                        None => self.set_status("Подключено, ожидает воспроизведения"),
+                        None => self.set_status("Включите трек, чтобы он появился в профиле"),
                     })
                 }
                 None => Ok(()),

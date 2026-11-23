@@ -52,6 +52,7 @@ struct PlaylistSlot {
 pub struct Track {
     /// Ревизия и серверная позиция строки, выбранной пользователем.
     playlist_slot: Option<Box<PlaylistSlot>>,
+    pub user_requested: bool,
     pub id: String,
     pub album_id: Option<String>,
     pub title: String,
@@ -159,7 +160,6 @@ pub struct WheelItem {
 pub enum WheelAction {
     Play(Vec<String>),
     Album(String),
-    Link(String),
     SharedWave,
     Settings,
 }
@@ -391,7 +391,16 @@ fn wave_cutout_url(v: &Value) -> Option<String> {
         })
 }
 
+pub(crate) fn advertised(v: &Value) -> bool {
+    ["ad", "isAd", "isAdvertisement"].iter().any(|key| v.get(key).and_then(Value::as_bool) == Some(true))
+        || v.get("advDisclaimer").and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty())
+        || ["type", "trackType", "contentType"].iter().filter_map(|key| v.get(key)?.as_str())
+            .any(|kind| matches!(kind.to_ascii_lowercase().as_str(),
+                "ad" | "advert" | "advertisement" | "audio-ad" | "audio_ad" | "audioad" | "preroll" | "midroll" | "postroll"))
+}
+
 pub(crate) fn parse_track(v: &Value) -> Option<Track> {
+    if advertised(v) { return None; }
     if v.get("available").and_then(|x| x.as_bool()) == Some(false) {
         return None;
     }
@@ -404,6 +413,7 @@ pub(crate) fn parse_track(v: &Value) -> Option<Track> {
     let flag = |k: &str| li.and_then(|l| l.get(k)).and_then(|x| x.as_bool()).unwrap_or(false);
     Some(Track {
         playlist_slot: None,
+        user_requested: false,
         id,
         album_id: album.and_then(|a| s(a.get("id"))),
         title,
@@ -561,6 +571,7 @@ fn parse_batch(v: &Value, session: String) -> Res<Batch> {
     let mut tracks = Vec::new();
     let mut liked = Vec::new();
     for it in v.get("sequence").and_then(|s| s.as_array()).into_iter().flatten() {
+        if advertised(it) { continue; }
         if let Some(mut t) = it.get("track").and_then(parse_track) {
             t.batch_id = batch_id.clone();
             if it.get("liked").and_then(|x| x.as_bool()) == Some(true) {
@@ -569,11 +580,25 @@ fn parse_batch(v: &Value, session: String) -> Res<Batch> {
             tracks.push(t);
         }
     }
-    if tracks.is_empty() {
-        return Err("волна вернула пустой список".into());
+    if !v.get("sequence").is_some_and(Value::is_array) {
+        return Err("волна вернула ответ без списка треков".into());
     }
     let seeds = wave_seeds(v.get("wave"));
     Ok(Batch { tracks, liked, batch_id, session, seeds })
+}
+
+#[cfg(test)]
+#[test]
+fn wave_drops_audio_ads_at_both_levels_and_keeps_music_with_similar_titles() {
+    let v = json!({"sequence":[
+        {"type":"ad","track":{"id":1,"title":"Пауза"}},
+        {"track":{"type":"audio-ad","id":2,"title":"Вставка"}},
+        {"track":{"id":3,"title":"Реклама"}},
+        {"type":"track","track":{"id":4,"title":"Песня","available":false}}
+    ]});
+    let batch = parse_batch(&v, String::new()).unwrap();
+    assert_eq!(batch.tracks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["3"]);
+    assert!(parse_batch(&json!({"sequence":[{"type":"ad"}]}), String::new()).unwrap().tracks.is_empty());
 }
 
 fn wave_seeds(data: Option<&Value>) -> Option<Vec<String>> {
@@ -641,6 +666,7 @@ fn activity_replaces_station_and_keeps_selected_wave_filters() {
 
 fn parse_wheel_item(item: &Value) -> Option<WheelItem> {
     let data = item.get("data")?;
+    if advertised(item) || advertised(data) { return None; }
     let description = str_of(item, "description");
     let (name, cover, round, action) = match item.get("type").and_then(Value::as_str) {
         Some("ALBUM" | "NON_MUSIC") => {
@@ -661,7 +687,7 @@ fn parse_wheel_item(item: &Value) -> Option<WheelItem> {
             {
                 WheelAction::SharedWave
             } else {
-                WheelAction::Link(url)
+                return None;
             };
             (str_of(data, "title"), s(data.pointer("/cover/uri")), false, action)
         }
@@ -727,9 +753,17 @@ pub struct WaveWords {
 
 fn parse_wave_words(cards: &Value, track_id: &str) -> Option<WaveWords> {
     let group = cards.as_array()?.iter().find(|group| s(group.get("id")).as_deref() == Some(track_id))?;
-    let card = group.get("cards")?.as_array()?.first()?.get("card")?;
+    group.get("cards")?.as_array()?.iter().filter_map(|item| item.get("card")).find_map(editorial_wave_words)
+}
+
+fn editorial_wave_words(card: &Value) -> Option<WaveWords> {
     let tags = card.get("tags").and_then(Value::as_array);
     let tagged = |name| tags.is_some_and(|tags| tags.iter().any(|tag| tag.as_str() == Some(name)));
+    let link = card.pointer("/action/weblink").or_else(|| card.pointer("/action/link")).and_then(Value::as_str).unwrap_or_default();
+    if advertised(card) || ["PROMO", "ADVERTISEMENT", "AD", "PLUS", "TICKETS"].iter().any(|tag| tagged(*tag))
+        || ["speakers", "plus", "tickets", "concerts"].iter().any(|part| link.split(['/', '?', '#', '.']).any(|s| s == *part)) {
+        return None;
+    }
     let text = card.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_owned();
     let action = card.get("action").and_then(|action| {
         let title = action.get("title")?.as_str()?.trim();
@@ -793,7 +827,7 @@ fn shared_wave_requires_server_seeds_and_accepts_only_music_invites() {
 
 #[cfg(test)]
 #[test]
-fn wave_words_use_the_first_card_for_the_requested_track() {
+fn wave_words_use_the_first_editorial_card_for_the_requested_track() {
     let cards = json!([
         {"id": "7", "cards": [
             {"card": {"text": "На Станции ваши треки звучат без лишних нажатий", "action": {
@@ -806,9 +840,10 @@ fn wave_words_use_the_first_card_for_the_requested_track() {
     let fact = parse_wave_words(&cards, "8").unwrap();
     assert!(fact.fact);
     assert_eq!(fact.text, "Факт об артисте");
-    let promo = parse_wave_words(&cards, "7").unwrap();
-    assert!(!promo.fact);
-    assert_eq!(promo.action, Some(("Выбрать Колонку".into(), "url:https://music.yandex.ru/speakers".into())));
+    let next = parse_wave_words(&cards, "7").unwrap();
+    assert!(next.fact);
+    assert_eq!(next.text, "Следующая карточка");
+    assert!(next.action.is_none());
     assert!(parse_wave_words(&cards, "9").is_none());
 
     let invalid = json!([{"id": "7", "cards": [{"card": {"action": {"title": "Открыть", "link": "file:///test"}}}]}]);

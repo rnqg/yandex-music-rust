@@ -208,10 +208,12 @@ mod tests {
 
     #[test]
     fn expired_access_is_replaced_before_checking_account() {
-        let mut cfg = Config::default();
-        cfg.token = Some("expired".into());
-        cfg.refresh_token = Some("saved-refresh".into());
-        cfg.token_expires = Some(10);
+        let mut cfg = Config {
+            token: Some("expired".into()),
+            refresh_token: Some("saved-refresh".into()),
+            token_expires: Some(10),
+            ..Config::default()
+        };
         let (changed, result) = prepare_account(&mut cfg, 20, |key| {
             assert_eq!(key, "saved-refresh");
             Ok(renewed(Some("rotated-refresh")))
@@ -228,9 +230,11 @@ mod tests {
 
     #[test]
     fn unauthorized_access_without_expiration_renews_once() {
-        let mut cfg = Config::default();
-        cfg.token = Some("expired".into());
-        cfg.refresh_token = Some("saved-refresh".into());
+        let mut cfg = Config {
+            token: Some("expired".into()),
+            refresh_token: Some("saved-refresh".into()),
+            ..Config::default()
+        };
         let attempts = std::cell::Cell::new(0);
         let (changed, result) = prepare_account(&mut cfg, 20, |_| {
             attempts.set(attempts.get() + 1);
@@ -245,8 +249,10 @@ mod tests {
 
     #[test]
     fn temporary_refresh_error_preserves_saved_login_for_retry() {
-        let mut cfg = Config::default();
-        cfg.refresh_token = Some("saved-refresh".into());
+        let mut cfg = Config {
+            refresh_token: Some("saved-refresh".into()),
+            ..Config::default()
+        };
         let (changed, result) = prepare_account(&mut cfg, 20, |_| {
             Err(RefreshError::Unavailable("offline".into()))
         }, |_| panic!("there is no access token"));
@@ -257,10 +263,12 @@ mod tests {
 
     #[test]
     fn rejected_refresh_can_fall_back_to_current_access() {
-        let mut cfg = Config::default();
-        cfg.token = Some("valid".into());
-        cfg.refresh_token = Some("revoked-refresh".into());
-        cfg.token_expires = Some(60);
+        let mut cfg = Config {
+            token: Some("valid".into()),
+            refresh_token: Some("revoked-refresh".into()),
+            token_expires: Some(60),
+            ..Config::default()
+        };
         let (changed, result) = prepare_account(&mut cfg, 20, |_| Err(RefreshError::Rejected), |key| {
             assert_eq!(key, "valid");
             Ok(account())

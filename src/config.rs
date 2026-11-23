@@ -12,16 +12,16 @@ pub struct Config {
     pub token: Option<String>,
     #[serde(skip)]
     pub refresh_token: Option<String>,
-    #[cfg(target_os = "macos")]
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    session_sealed: bool,
     /// Токены под DPAPI или в связке ключей Linux (src/secret.rs).
+    #[cfg(not(target_os = "macos"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     token_sealed: Option<String>,
+    #[cfg(not(target_os = "macos"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     refresh_sealed: Option<String>,
     /// Токен открытым текстом: старый формат или Linux без связки ключей. Как только спрятать есть
     /// куда, при запуске переносится туда.
+    #[cfg(not(target_os = "macos"))]
     #[serde(rename = "token", skip_serializing_if = "Option::is_none")]
     token_plain: Option<String>,
     /// Unix-время, когда токен истечёт.
@@ -33,10 +33,14 @@ pub struct Config {
     pub theme: String,
     /// 0 превосходное, 1 оптимальное, 2 экономичное
     pub quality: u8,
+    pub crossfade: bool,
+    pub crossfade_seconds: u8,
     pub eq_on: bool,
     pub eq_preset: usize,
     pub eq_preamp: f32,
     pub eq_gains: [f32; 10],
+    pub eq_frequencies: [f32; 10],
+    pub eq_q: [f32; 10],
     /// Язык интерфейса Яндекса: ru, en, uz, kk — уходит в Accept-Language.
     pub lang: String,
     pub navbar_collapsed: bool,
@@ -52,6 +56,7 @@ pub struct Config {
     pub check_updates: bool,
     /// «Треки 18+» в меню профиля.
     pub allow_explicit: bool,
+    pub playback_rules: crate::playback_rules::PlaybackRules,
     /// Обычное окно при выходе, в пикселях экрана. На Wayland места окна не узнать.
     pub window_pos: Option<[i32; 2]>,
     pub window_size: Option<[u32; 2]>,
@@ -73,10 +78,11 @@ impl Default for Config {
         Config {
             token: None,
             refresh_token: None,
-            #[cfg(target_os = "macos")]
-            session_sealed: false,
+            #[cfg(not(target_os = "macos"))]
             token_sealed: None,
+            #[cfg(not(target_os = "macos"))]
             refresh_sealed: None,
+            #[cfg(not(target_os = "macos"))]
             token_plain: None,
             token_expires: None,
             volume: 0.6,
@@ -84,10 +90,14 @@ impl Default for Config {
             discord_app_id: String::new(),
             theme: "system".into(),
             quality: 0,
+            crossfade: false,
+            crossfade_seconds: 6,
             eq_on: false,
             eq_preset: 1,
             eq_preamp: 1.0,
             eq_gains: [0.0; 10],
+            eq_frequencies: crate::eq::FREQS,
+            eq_q: [crate::eq::DEFAULT_Q; 10],
             lang: "ru".into(),
             navbar_collapsed: false,
             mode: "smooth".into(),
@@ -96,6 +106,7 @@ impl Default for Config {
             hidden_blocks: Vec::new(),
             check_updates: true,
             allow_explicit: true,
+            playback_rules: Default::default(),
             window_pos: None,
             window_size: None,
             window_maximized: false,
@@ -106,9 +117,10 @@ impl Default for Config {
 
 pub enum LoginStorage {
     Current,
+    #[cfg(not(target_os = "macos"))]
     NeedsSealing,
     #[cfg(target_os = "macos")]
-    Recovered,
+    Unavailable,
 }
 
 /// %APPDATA%\yamusic-rs или ~/.config/yamusic-rs. Папка прежнего названия (yamusic-lite, ещё раньше yawave) переносится
@@ -147,74 +159,43 @@ impl Config {
             .unwrap_or_default()
     }
 
+    #[cfg(target_os = "macos")]
     pub fn has_saved_login(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        if self.session_sealed {
-            return true;
-        }
+        crate::session_file::exists(&crate::session_file::directory())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    pub fn has_saved_login(&self) -> bool {
         self.token_sealed.is_some() || self.refresh_sealed.is_some()
             || self.token_plain.as_deref().is_some_and(|token| !token.trim().is_empty())
     }
 
+    #[cfg(target_os = "macos")]
     pub fn resolve_login(&mut self) -> LoginStorage {
-        self.resolve_stored_login(
-            #[cfg(target_os = "macos")]
-            crate::secret::read_login,
-            crate::secret::open,
-        )
+        if self.token.is_some() || self.refresh_token.is_some() {
+            return LoginStorage::Current;
+        }
+        match crate::session_file::load(&crate::session_file::directory()) {
+            Ok(saved) => {
+                self.token = saved.token;
+                self.refresh_token = saved.refresh;
+                self.token_expires = saved.expires;
+                LoginStorage::Current
+            }
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::InvalidData) => LoginStorage::Current,
+            Err(_) => LoginStorage::Unavailable,
+        }
     }
 
-    fn resolve_stored_login(
-        &mut self,
-        #[cfg(target_os = "macos")] read_login: impl FnOnce() -> crate::secret::Opened<crate::secret::SavedLogin>,
-        open: impl Fn(&str) -> crate::secret::Opened,
-    ) -> LoginStorage {
-        use crate::secret::Opened;
-        #[cfg(target_os = "macos")]
-        if self.token.is_none() && self.refresh_token.is_none()
-            && (self.session_sealed || self.token_sealed.is_some() || self.refresh_sealed.is_some())
-        {
-            match read_login() {
-                Opened::Value(saved) => {
-                    self.token = saved.token;
-                    self.refresh_token = saved.refresh;
-                    self.token_expires = saved.expires;
-                    if self.session_sealed {
-                        return LoginStorage::Current;
-                    }
-                    self.mark_session_sealed();
-                    return LoginStorage::Recovered;
-                }
-                Opened::Unavailable => return LoginStorage::Current,
-                Opened::Missing => {}
+    #[cfg(not(target_os = "macos"))]
+    pub fn resolve_login(&mut self) -> LoginStorage {
+        let open = |value: &str| crate::secret::open(value).value();
+        self.token = self.token.take().or_else(|| self.token_sealed.as_deref().and_then(open));
+        self.refresh_token = self.refresh_token.take().or_else(|| self.refresh_sealed.as_deref().and_then(open));
+        if let Some(plain) = self.token_plain.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if self.token.is_none() {
+                self.token = Some(plain.to_owned());
             }
-        }
-        let stored = self.token.take().map(Opened::Value)
-            .unwrap_or_else(|| self.token_sealed.as_deref().map_or(Opened::Missing, &open));
-        #[cfg(target_os = "macos")]
-        let can_read_refresh = !matches!(stored, Opened::Unavailable);
-        #[cfg(not(target_os = "macos"))]
-        let can_read_refresh = true;
-        self.token = stored.value();
-        let refresh = if can_read_refresh {
-            self.refresh_token.take().map(Opened::Value)
-                .unwrap_or_else(|| self.refresh_sealed.as_deref().map_or(Opened::Missing, open))
-        } else {
-            Opened::Missing
-        };
-        #[cfg(target_os = "macos")]
-        let legacy_read = can_read_refresh && !matches!(refresh, Opened::Unavailable);
-        self.refresh_token = refresh.value();
-        let plain = self.token_plain.as_deref().map(str::trim).filter(|t| !t.is_empty());
-        if self.token.is_none() {
-            self.token = plain.map(str::to_owned);
-        }
-        #[cfg(target_os = "macos")]
-        if !self.session_sealed && legacy_read && (self.token.is_some() || self.refresh_token.is_some()) {
-            return LoginStorage::NeedsSealing;
-        }
-        #[cfg(not(target_os = "macos"))]
-        if plain.is_some() {
             return LoginStorage::NeedsSealing;
         }
         LoginStorage::Current
@@ -228,46 +209,22 @@ impl Config {
         if !sealed {
             return false;
         }
-        #[cfg(target_os = "macos")]
-        let remove_legacy = resolved.session_sealed && !self.session_sealed
-            && (self.token_sealed.is_some() || self.refresh_sealed.is_some());
-        #[cfg(target_os = "macos")]
+        #[cfg(not(target_os = "macos"))]
         {
-            self.session_sealed = resolved.session_sealed;
+            self.token_sealed = resolved.token_sealed;
+            self.refresh_sealed = resolved.refresh_sealed;
+            self.token_plain = resolved.token_plain;
         }
-        self.token_sealed = resolved.token_sealed;
-        self.refresh_sealed = resolved.refresh_sealed;
-        self.token_plain = resolved.token_plain;
-        let saved = self.write_config();
-        #[cfg(target_os = "macos")]
-        if saved && remove_legacy {
-            std::thread::spawn(|| {
-                crate::secret::forget("token");
-                crate::secret::forget("refresh");
-            });
-        }
-        saved
-    }
-
-    #[cfg(target_os = "macos")]
-    fn mark_session_sealed(&mut self) {
-        self.session_sealed = true;
-        self.token_sealed = None;
-        self.refresh_sealed = None;
-        self.token_plain = None;
+        self.write_config()
     }
 
     #[cfg(target_os = "macos")]
     pub fn seal_credentials(&mut self) -> bool {
-        let saved = crate::secret::store_login(&crate::secret::SavedLogin {
+        crate::session_file::save(&crate::session_file::directory(), &crate::session_file::SavedLogin {
             token: self.token.clone(),
             refresh: self.refresh_token.clone(),
             expires: self.token_expires,
-        });
-        if saved {
-            self.mark_session_sealed();
-        }
-        saved
+        }).is_ok()
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -303,22 +260,26 @@ impl Config {
         true
     }
 
-    pub fn forget_login(&mut self) {
-        self.token = None;
-        self.token_sealed = None;
-        self.token_plain = None;
-        self.refresh_token = None;
-        self.refresh_sealed = None;
-        self.token_expires = None;
+    pub fn forget_login(&mut self) -> bool {
         #[cfg(target_os = "macos")]
-        {
-            self.session_sealed = false;
-            crate::secret::forget_login();
+        if crate::session_file::remove(&crate::session_file::directory()).is_err() {
+            return false;
         }
-        crate::secret::forget("token");
-        crate::secret::forget("refresh");
+        self.token = None;
+        self.refresh_token = None;
+        self.token_expires = None;
+        #[cfg(not(target_os = "macos"))]
+        {
+            self.token_sealed = None;
+            self.token_plain = None;
+            self.refresh_sealed = None;
+            crate::secret::forget("token");
+            crate::secret::forget("refresh");
+        }
         self.save();
+        true
     }
+
 }
 
 /// На Linux без связки ключей токен лежит открытым текстом, поэтому файл сразу создаётся
@@ -383,6 +344,7 @@ mod tests {
     #[test]
     fn restored_login_preserves_changes_to_settings() {
         let mut cfg: Config = serde_json::from_str(r#"{"token_sealed":"fixture","volume":0.5}"#).unwrap();
+        #[cfg(not(target_os = "macos"))]
         assert!(cfg.has_saved_login());
         let mut resolved = cfg.clone();
         resolved.token = Some("access-fixture".into());
@@ -394,76 +356,20 @@ mod tests {
         assert_eq!(cfg.volume, 0.8);
         assert_eq!(cfg.token.as_deref(), Some("access-fixture"));
         assert_eq!(cfg.refresh_token.as_deref(), Some("refresh-fixture"));
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(cfg.token_sealed.as_deref(), Some("fixture"));
     }
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn legacy_records_are_retained_until_combined_record_is_saved() {
-        use super::LoginStorage;
-        use crate::secret::Opened;
-        let mut cfg: Config = serde_json::from_str(
-            r#"{"token_sealed":"keyring:token","refresh_sealed":"keyring:refresh","token_expires":123}"#,
-        ).unwrap();
-        let mut resolved = cfg.clone();
-        let storage = resolved.resolve_stored_login(|| Opened::Missing, |marker| match marker {
-            "keyring:token" => Opened::Value("legacy-access".into()),
-            "keyring:refresh" => Opened::Value("legacy-refresh".into()),
-            _ => panic!("unexpected record"),
-        });
-        assert!(matches!(storage, LoginStorage::NeedsSealing));
-        assert!(!cfg.apply_login(resolved, Some(false)));
-        assert_eq!(cfg.token.as_deref(), Some("legacy-access"));
-        assert_eq!(cfg.refresh_token.as_deref(), Some("legacy-refresh"));
-        assert_eq!(cfg.token_sealed.as_deref(), Some("keyring:token"));
-        assert_eq!(cfg.refresh_sealed.as_deref(), Some("keyring:refresh"));
-        assert!(!cfg.session_sealed);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn combined_record_is_recovered_without_reopening_legacy_records() {
-        use super::LoginStorage;
-        use crate::secret::{Opened, SavedLogin};
-        let mut cfg: Config = serde_json::from_str(
-            r#"{"token_sealed":"keyring:token","refresh_sealed":"keyring:refresh","token_expires":123}"#,
-        ).unwrap();
-        let storage = cfg.resolve_stored_login(|| Opened::Value(SavedLogin {
-            token: Some("combined-access".into()),
-            refresh: Some("combined-refresh".into()),
-            expires: Some(456),
-        }), |_| panic!("legacy record should not be opened"));
-        assert!(matches!(storage, LoginStorage::Recovered));
-        assert_eq!(cfg.token_expires, Some(456));
+    fn settings_ignore_legacy_keychain_and_plaintext_credentials() {
+        let mut cfg: Config = serde_json::from_str(r#"{"session_sealed":true,"token_sealed":"keyring:token","refresh_sealed":"keyring:refresh","token":"old-fixture","volume":0.3}"#).unwrap();
+        assert!(cfg.token.is_none() && cfg.refresh_token.is_none());
+        cfg.token = Some("new-fixture".into());
         let disk = serde_json::to_value(&cfg).unwrap();
-        assert_eq!(disk["session_sealed"], true);
-        for field in ["token", "refresh_token", "token_sealed", "refresh_sealed"] {
+        assert_eq!(cfg.volume, 0.3);
+        for field in ["token", "refresh_token", "token_sealed", "refresh_sealed", "session_sealed"] {
             assert!(disk.get(field).is_none());
         }
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn denied_session_does_not_request_legacy_records() {
-        use super::LoginStorage;
-        use crate::secret::Opened;
-        let mut cfg: Config = serde_json::from_str(r#"{"session_sealed":true,"token_sealed":"keyring:token"}"#).unwrap();
-        let storage = cfg.resolve_stored_login(|| Opened::Unavailable, |_| panic!("unexpected legacy read"));
-        assert!(matches!(storage, LoginStorage::Current));
-        assert!(cfg.token.is_none() && cfg.refresh_token.is_none());
-        assert!(cfg.has_saved_login());
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn plaintext_legacy_login_can_be_migrated_without_a_keychain_read() {
-        use super::LoginStorage;
-        let mut cfg: Config = serde_json::from_str(r#"{"token":"legacy-fixture"}"#).unwrap();
-        let storage = cfg.resolve_stored_login(
-            || panic!("no combined record is configured"),
-            |_| panic!("no legacy record is configured"),
-        );
-        assert!(matches!(storage, LoginStorage::NeedsSealing));
-        assert_eq!(cfg.token.as_deref(), Some("legacy-fixture"));
     }
 }

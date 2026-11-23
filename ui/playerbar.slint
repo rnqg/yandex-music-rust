@@ -46,7 +46,7 @@ export component PlayerBar inherits Rectangle {
     property <bool> on: App.has-track;
     property <length> side-gap: compact ? Theme.spacer-size-l : Theme.spacer-size-xxxl;
     property <length> transport-half: 160px + side-gap;
-    property <length> right-controls: self.width - 193px;
+    property <length> right-controls: self.width - (App.macos ? 237px : 193px);
     property <length> c: min(self.width / 2 - (App.macos ? Theme.spacer-size-m : 0px),
         right-controls - Theme.spacer-size-l - transport-half);
     property <length> transport-edge: c - transport-half;
@@ -250,7 +250,13 @@ export component PlayerBar inherits Rectangle {
                 clicked => { App.like(); }
             }
 
-            BarButton { x: right-controls; icon: Icons.lyrics; label: T.t("Текст песни"); enabled: on && App.has-lyrics; clicked => { App.open-fullscreen(2); } }
+            if App.macos: BarButton {
+                x: right-controls;
+                icon: Icons.mini-player;
+                label: T.t("Мини-плеер");
+                clicked => { App.toggle-mini(); }
+            }
+            BarButton { x: parent.width - 193px; icon: Icons.lyrics; label: T.t("Текст песни"); enabled: on && App.has-lyrics; clicked => { App.open-fullscreen(2); } }
             BarButton { x: parent.width - 145px; icon: Icons.queue; label: T.t("Очередь воспроизведения"); enabled: on; clicked => { App.open-fullscreen(1); } }
             BarButton { x: parent.width - 97px; icon: Icons.settings; label: T.t("Настройки звука"); active: App.eq-open; clicked => { App.eq-open = !App.eq-open; } }
             vol-btn := BarButton {

@@ -92,6 +92,10 @@ fn defs(v: &Value) -> Vec<BlockDef> {
             a.iter()
                 .filter_map(|b| {
                     let d = b.get("data").cloned().unwrap_or(Value::Null);
+                    if crate::api::advertised(b) || crate::api::advertised(&d)
+                        || matches!(b.get("type")?.as_str()?, "SPECIAL" | "EDITORIAL_PROMOTIONS" | "PLUS" | "PLUS_PROMO") {
+                        return None;
+                    }
                     Some(BlockDef {
                         id: str_of(b, "id"),
                         kind: b.get("type")?.as_str()?.to_string(),
@@ -324,7 +328,9 @@ fn trend(p: &str) -> i32 {
 
 pub fn parse_block(kind: &str, v: &Value) -> LBlock {
     let mut b = LBlock::default();
-    let items = |key: &str| v.get(key).and_then(|i| i.as_array()).cloned().unwrap_or_default();
+    if crate::api::advertised(v) { return b; }
+    let items = |key: &str| v.get(key).and_then(Value::as_array).into_iter().flatten()
+        .filter(|item| !crate::api::advertised(item)).cloned().collect::<Vec<_>>();
     match kind {
         "LIKES_AND_HISTORY" => {
             if let Some(f) = v.get("favorites") {

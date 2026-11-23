@@ -10,6 +10,8 @@ mod client;
 mod config;
 mod discord;
 mod eq;
+mod crossfade;
+mod audio_decoder;
 mod flac;
 mod gui;
 mod history;
@@ -23,7 +25,11 @@ mod mpris;
 mod net;
 mod palette;
 mod player;
+mod playback_rules;
+#[cfg(not(target_os = "macos"))]
 mod secret;
+#[cfg(target_os = "macos")]
+mod session_file;
 #[cfg(target_os = "macos")]
 mod spectrum;
 mod stream;
@@ -56,15 +62,20 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(());
     }
     let cfg = config::Config::load_settings();
-    let renderer = if cfg!(target_os = "macos") && cfg.mode != "lite" { "skia" } else { "skia-software" };
-    let backend = slint::BackendSelector::new().backend_name("winit".into()).renderer_name(renderer.into());
+    let backend = slint::BackendSelector::new().backend_name("winit".into());
+    #[cfg(not(target_os = "macos"))]
+    let backend = backend.renderer_name("skia-software".into());
     #[cfg(target_os = "macos")]
     let backend = {
         use slint::winit_030::winit::platform::macos::WindowAttributesExtMacOS;
 
-        backend.with_winit_window_attributes_hook(|window| {
-            window.with_title_hidden(true).with_titlebar_transparent(true).with_fullsize_content_view(true)
-        })
+        let mut settings = slint::wgpu_30::WGPUSettings::default();
+        settings.backends = wgpu::Backends::METAL;
+        settings.device_memory_hints = wgpu::MemoryHints::MemoryUsage;
+        backend.renderer_name("skia".into()).require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(settings))
+            .with_winit_window_attributes_hook(|window| {
+                window.with_title_hidden(true).with_titlebar_transparent(true).with_fullsize_content_view(true)
+            })
     };
     backend.select()?;
     // По app_id (Wayland) и WM_CLASS (X11) окружение находит .desktop и значок.

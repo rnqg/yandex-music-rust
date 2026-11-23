@@ -5,6 +5,7 @@ slint::include_modules!();
 mod history_ui;
 mod landing_ui;
 mod multivibe;
+mod quick_actions;
 #[cfg(target_os = "macos")]
 mod wave_visual;
 
@@ -23,6 +24,20 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+fn show_playback_rules(app: &App<'_>, rules: &crate::playback_rules::PlaybackRules) {
+    app.set_unique_wave(rules.unique_wave);
+    app.set_block_features(rules.block_features);
+    app.set_skip_speed(rules.skip_speed);
+    app.set_skip_remix(rules.skip_remix);
+    app.set_skip_live(rules.skip_live);
+    app.set_stop_at_end(rules.stop_at_end);
+    let mut artists = rules.blocked.iter().map(|(id, name)| MenuEntry {
+        id: id.as_str().into(), text: name.as_str().into(), ..Default::default()
+    }).collect::<Vec<_>>();
+    artists.sort_by(|a, b| a.text.as_str().cmp(b.text.as_str()));
+    app.set_blocked_artists(ModelRc::from(Rc::new(VecModel::from(artists))));
+}
 
 struct State {
     cfg: Config,
@@ -66,6 +81,7 @@ struct State {
     results_shown: Option<Arc<Data>>,
     results: Vec<Track>,
     search_timer: Option<Timer>,
+    quick: quick_actions::QuickState,
     chart: Vec<Track>,
     artist_key: Option<String>,
     artist_shown: Option<Arc<Data>>,
@@ -114,6 +130,7 @@ struct Ctx {
     images: Images,
     lyric_tick: Timer,
     volume_save: Timer,
+    eq_save: Timer,
     #[cfg(target_os = "macos")]
     wave_visual: Rc<wave_visual::WaveVisual>,
     #[cfg(target_os = "macos")]
@@ -767,6 +784,7 @@ impl Ctx {
     }
 
     fn refresh(self: &Rc<Self>) {
+        self.refresh_quick();
         let said = self.st.borrow().net.as_ref().and_then(|n| n.toast.lock().unwrap().take());
         if let Some((msg, _)) = said {
             self.toast(msg);
@@ -1163,13 +1181,14 @@ impl Ctx {
         });
     }
 
-    fn play_list(self: &Rc<Self>, i: usize) {
+    fn play_list(self: &Rc<Self>, row: i32) {
+        let i = row.max(0) as usize;
         let Some(data) = self.list() else { return };
         let Data::List(l) = &*data else { return };
         if l.tracks.is_empty() {
             return;
         }
-        if self.ui().global::<App>().get_list_current() == i as i32 {
+        if row >= 0 && self.ui().global::<App>().get_list_current() == row {
             self.player.send(Cmd::PlayPause);
             return;
         }
@@ -1183,6 +1202,7 @@ impl Ctx {
         self.player.send(Cmd::PlayList {
             source: Source::List { kind: l.kind, id: Self::list_id(l), title: l.title.clone() },
             tracks: l.tracks.clone(),
+            selected: row >= 0,
             start,
             after: After::Wave(wave),
         });
@@ -1230,7 +1250,6 @@ impl Ctx {
                 self.start();
             }
             WheelAction::Album(id) => self.navigate(Page::List, Some(format!("album:{id}")), true),
-            WheelAction::Link(url) => sys::open_url(&url),
             WheelAction::SharedWave => self.open_wave_rooms(),
             WheelAction::Settings => self.open_wave_filters(),
         }
@@ -1551,7 +1570,7 @@ fn apply_mode(ui: &AppWindow, lite: bool) {
     ui.global::<App>().set_motion(!lite);
     // Кэш глифов по умолчанию 2 МБ. В «Плавном» крупный текст песни и анимация масштаба
     // строки его вытесняют, и тогда весь текст растеризуется заново в каждом кадре.
-    skia_safe::graphics::set_font_cache_limit(if lite { 2 << 20 } else { 16 << 20 });
+    skia_safe::graphics::set_font_cache_limit(if lite { 2 << 20 } else { 8 << 20 });
 }
 
 /// Окно winit создаётся не сразу после `show()` (до запуска цикла событий и с OpenGL),
@@ -1873,6 +1892,11 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
     app.set_updates_available(crate::update::AVAILABLE);
     app.set_project_repository(crate::update::REPOSITORY.into());
     app.set_allow_explicit(cfg.allow_explicit);
+    show_playback_rules(&app, &cfg.playback_rules);
+    player.send(Cmd::Rules(cfg.playback_rules.clone()));
+    app.set_crossfade(cfg.crossfade);
+    app.set_crossfade_seconds(cfg.crossfade_seconds.clamp(1, 12) as i32);
+    player.send(Cmd::Crossfade(if cfg.crossfade { cfg.crossfade_seconds.clamp(1, 12) } else { 0 }));
     app.set_windows(cfg!(windows));
     app.set_macos(cfg!(target_os = "macos"));
     app.set_translations(crate::i18n::available());
@@ -1901,8 +1925,9 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
         images: Images::new(lite),
         lyric_tick: Timer::default(),
         volume_save: Timer::default(),
+        eq_save: Timer::default(),
         #[cfg(target_os = "macos")]
-        wave_visual: Rc::new(wave_visual::WaveVisual::new(player.eq.spectrum.clone())),
+        wave_visual: wave_visual::WaveVisual::attach(&ui, player.eq.spectrum.clone()),
         #[cfg(target_os = "macos")]
         window_occluded: Cell::new(false),
         tracks,
@@ -1946,6 +1971,7 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
             results_shown: None,
             results: Vec::new(),
             search_timer: None,
+            quick: Default::default(),
             chart: Vec::new(),
             artist_key: None,
             artist_shown: None,
@@ -2104,6 +2130,7 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
                 source: Source::List { kind: ListKind::Likes, id: "likes".into(), title: "Мне нравится".into() },
                 tracks,
                 start,
+                selected: true,
                 after: After::Wave(Source::Wave),
             });
             c.start();
@@ -2121,7 +2148,7 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
     app.on_play_wheel(|i| with_ctx(|c| c.play_wheel(i as usize)));
     app.on_go_back(|| with_ctx(|c| c.go_back()));
     app.on_go_forward(|| with_ctx(|c| c.go_forward()));
-    app.on_play_list(|i| with_ctx(|c| c.play_list(i as usize)));
+    app.on_play_list(|i| with_ctx(|c| c.play_list(i)));
     app.on_like_track(|i| {
         with_ctx(|c| {
             let Some(t) = c.view_track(i as usize) else { return };
@@ -2237,6 +2264,16 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
                 None => w.set_size(slint::LogicalSize::new(1280.0, 800.0)),
             }
         }
+        #[cfg(target_os = "macos")]
+        {
+            let weak = ui.as_weak();
+            Timer::single_shot(Duration::ZERO, move || {
+                if let Some(ui) = weak.upgrade() {
+                    rescale(&ui, true);
+                    ui.window().request_redraw();
+                }
+            });
+        }
     });
     let weak = ui.as_weak();
     app.on_resize_window(move |dir| {
@@ -2310,10 +2347,20 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
         });
     }
 
-    ui.window().on_winit_window_event(|_w, ev| {
+    let key_modifiers = Cell::new(winit::keyboard::ModifiersState::empty());
+    ui.window().on_winit_window_event(move |_w, ev| {
         use slint::winit_030::EventResult;
         use winit::event::{ElementState, MouseButton, WindowEvent};
         match ev {
+            WindowEvent::ModifiersChanged(modifiers) => {
+                key_modifiers.set(modifiers.state());
+                EventResult::Propagate
+            }
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let mut handled = false;
+                with_ctx(|c| handled = c.quick_key(event.physical_key, event.repeat, key_modifiers.get()));
+                if handled { EventResult::PreventDefault } else { EventResult::Propagate }
+            }
             #[cfg(target_os = "macos")]
             WindowEvent::Occluded(occluded) => {
                 with_ctx(|c| c.window_occluded.set(*occluded));
@@ -2393,7 +2440,7 @@ pub fn run(start_hidden: bool, cfg: Config) -> Result<(), slint::PlatformError> 
         ctx.login_start();
     }
     slint::run_event_loop_until_quit()?;
-    if ctx.volume_save.running() {
+    if ctx.volume_save.running() || ctx.eq_save.running() {
         ctx.st.borrow().cfg.save();
     }
     save_places(&ui, &places);
@@ -2409,10 +2456,17 @@ fn restore_login(mut cfg: Config) {
     std::thread::spawn(move || {
         let storage = cfg.resolve_login();
         let (renewed, account) = crate::auth::restore_account(&mut cfg);
+        #[cfg(target_os = "macos")]
+        if matches!(storage, LoginStorage::Unavailable) && matches!(account, Err(AccountError::Unauthorized)) {
+            let _ = slint::invoke_from_event_loop(|| {
+                with_ctx(|ctx| ctx.show_login_retry("Не удалось открыть файл сеанса. Проверьте права доступа и нажмите «Повторить»."));
+            });
+            return;
+        }
         let sealed = match (renewed, storage) {
-            (true, _) | (_, LoginStorage::NeedsSealing) => Some(cfg.seal_credentials()),
-            #[cfg(target_os = "macos")]
-            (_, LoginStorage::Recovered) => Some(true),
+            (true, _) => Some(cfg.seal_credentials()),
+            #[cfg(not(target_os = "macos"))]
+            (_, LoginStorage::NeedsSealing) => Some(cfg.seal_credentials()),
             _ => None,
         };
         let _ = slint::invoke_from_event_loop(move || {
@@ -2715,8 +2769,6 @@ impl Ctx {
                 let _ = slint::invoke_from_event_loop(move || {
                     if let Some(ui) = w.upgrade() {
                         let app = ui.global::<App>();
-                        let chars: Vec<SharedString> = code.chars().map(|c| SharedString::from(c.to_string())).collect();
-                        app.set_login_code_chars(ModelRc::from(Rc::new(VecModel::from(chars))));
                         app.set_login_code(code.into());
                         app.set_login_error(err.into());
                     }
@@ -2773,16 +2825,24 @@ impl Ctx {
                 app.set_logged_out(false);
                 self.player.send(Cmd::Login { token, account });
                 if cfg!(target_os = "macos") && !saved {
-                    self.toast("Не удалось сохранить данные входа в Связке ключей");
+                    self.toast("Не удалось сохранить сеанс на этом Mac");
                 }
             }
             (Err(AccountError::Unavailable(error)), _) => {
                 log(format!("Вход: {error}"));
-                app.set_login_retry(true);
-                app.set_login_error("Не удалось подключиться к Яндекс Музыке".into());
+                self.show_login_retry("Не удалось подключиться к Яндекс Музыке");
             }
             _ => self.login_start(),
         }
+    }
+
+    fn show_login_retry(&self, message: &str) {
+        let ui = self.ui();
+        let app = ui.global::<App>();
+        app.set_restoring_login(false);
+        app.set_login_code(SharedString::new());
+        app.set_login_retry(true);
+        app.set_login_error(message.into());
     }
 
     fn login_or_retry(self: &Rc<Self>) {
@@ -2800,16 +2860,21 @@ impl Ctx {
     }
 
     fn logout(self: &Rc<Self>) {
+        let token = self.st.borrow().cfg.token.clone();
+        if !self.st.borrow_mut().cfg.forget_login() {
+            self.toast("Не удалось удалить файл сеанса");
+            return;
+        }
+        if self.ui().global::<App>().get_quick_open() { self.quick_toggle(); }
         self.player.send(Cmd::Logout);
         {
             let mut st = self.st.borrow_mut();
-            if let Some(token) = st.cfg.token.clone() {
+            if let Some(token) = token {
                 std::thread::spawn(move || match crate::auth::revoke(&token) {
                     Ok(()) => log("выход: токен отозван"),
                     Err(e) => log(format!("выход: токен не отозван: {e}")),
                 });
             }
-            st.cfg.forget_login();
             st.net = None;
             st.started = false;
             st.uid.clear();
@@ -3154,6 +3219,7 @@ impl Ctx {
             source: Source::List { kind, id: id.to_string(), title: title.to_string() },
             tracks,
             start,
+            selected: true,
             after: After::Wave(Source::Wave),
         });
         self.start();
@@ -3192,6 +3258,9 @@ impl Ctx {
         }
         if !t.artist_list.is_empty() {
             items.push(self.menu_entry("artist", "Перейти к исполнителю", icons.get_m_artist(), false));
+        }
+        if t.artist_list.iter().any(|a| !a.id.is_empty()) {
+            items.push(self.menu_entry("choose-block", "Фильтр исполнителей", icons.get_m_dislike(), false));
         }
         items.push(self.menu_entry("info", "О треке", icons.get_m_info(), false));
         items.push(self.menu_entry("complain", "Сообщить о проблеме", icons.get_m_complain(), false));
@@ -3247,10 +3316,43 @@ impl Ctx {
         }
     }
 
+    fn change_rules(&self, edit: impl FnOnce(&mut crate::playback_rules::PlaybackRules)) {
+        let mut st = self.st.borrow_mut();
+        edit(&mut st.cfg.playback_rules);
+        show_playback_rules(&self.ui().global::<App>(), &st.cfg.playback_rules);
+        self.player.send(Cmd::Rules(st.cfg.playback_rules.clone()));
+        st.cfg.save();
+    }
+
+    fn toggle_block(&self, id: &str, name: &str) {
+        self.change_rules(|rules| {
+            if rules.blocked.remove(id).is_none() {
+                rules.blocked.insert(id.to_owned(), name.to_owned());
+            }
+        });
+    }
+
     fn setting(self: &Rc<Self>, id: &str) {
+        if let Some(artist) = id.strip_prefix("unblock:") {
+            self.change_rules(|r| { r.blocked.remove(artist); });
+            return;
+        }
         let ui = self.ui();
         let app = ui.global::<App>();
         match id {
+            "unique-wave" => self.change_rules(|r| r.unique_wave = !r.unique_wave),
+            "crossfade" => {
+                let mut st = self.st.borrow_mut();
+                st.cfg.crossfade = !st.cfg.crossfade;
+                app.set_crossfade(st.cfg.crossfade);
+                self.player.send(Cmd::Crossfade(if st.cfg.crossfade { st.cfg.crossfade_seconds.clamp(1, 12) } else { 0 }));
+                st.cfg.save();
+            }
+            "block-features" => self.change_rules(|r| r.block_features = !r.block_features),
+            "skip-speed" => self.change_rules(|r| r.skip_speed = !r.skip_speed),
+            "skip-remix" => self.change_rules(|r| r.skip_remix = !r.skip_remix),
+            "skip-live" => self.change_rules(|r| r.skip_live = !r.skip_live),
+            "stop-at-end" => self.change_rules(|r| r.stop_at_end = !r.stop_at_end),
             "clear" => {
                 self.images.clear();
                 sys::release_memory();
@@ -3259,7 +3361,7 @@ impl Ctx {
             "mode:smooth" | "mode:lite" => {
                 let lite = id == "mode:lite";
                 apply_mode(&ui, lite);
-                let changed = self.lite.replace(lite) != lite;
+                self.lite.set(lite);
                 self.images.set_lite(lite);
                 if lite {
                     sys::release_memory();
@@ -3267,10 +3369,6 @@ impl Ctx {
                 let mut st = self.st.borrow_mut();
                 st.cfg.mode = if lite { "lite" } else { "smooth" }.to_string();
                 st.cfg.save();
-                drop(st);
-                if cfg!(target_os = "macos") && changed {
-                    self.toast("Режим применится полностью после перезапуска");
-                }
             }
             "less-ai" => {
                 let on = !app.get_less_ai();
@@ -3597,7 +3695,9 @@ impl Ctx {
     fn open_artist_menu(self: &Rc<Self>, x: f32, y: f32) {
         let ui = self.ui();
         let icons = ui.global::<Icons>();
+        let blocked = self.current_artist().is_some_and(|(id, _)| self.st.borrow().cfg.playback_rules.blocked.contains_key(&id));
         let items = vec![
+            self.menu_entry("artist-block", if blocked { "Разблокировать исполнителя" } else { "Блокировать исполнителя" }, icons.get_m_dislike(), false),
             self.menu_entry("artist-vibe", "Моя волна по исполнителю", icons.get_m_vibe(), false),
             self.menu_entry("artist-share", "Поделиться", icons.get_m_share(), false),
         ];
@@ -3633,6 +3733,7 @@ impl Ctx {
         if let Some(rest) = id.strip_prefix("artist-") {
             let Some((aid, name)) = self.current_artist() else { return };
             match rest {
+                "block" => self.toggle_block(&aid, &name),
                 "vibe" => {
                     self.player.send(Cmd::Wave(Source::Seed { station: format!("artist:{aid}"), header: "Моя волна по исполнителю".into(), title: name }));
                     self.start();
@@ -3680,6 +3781,21 @@ impl Ctx {
             return;
         }
         let Some(t) = self.st.borrow().menu_track.clone() else { return };
+        if id == "choose-block" {
+            let ui = self.ui();
+            let app = ui.global::<App>();
+            let st = self.st.borrow();
+            let entries = t.artist_list.iter().filter(|a| !a.id.is_empty()).map(|artist| {
+                let verb = if st.cfg.playback_rules.blocked.contains_key(&artist.id) { "Разблокировать" } else { "Блокировать" };
+                self.menu_entry(&format!("block:{}", artist.id), &format!("{verb} · {}", artist.name), ui.global::<Icons>().get_m_artist(), false)
+            }).collect();
+            self.show_menu(entries, app.get_menu_x(), app.get_menu_y(), app.get_menu_below());
+            return;
+        }
+        if let Some(aid) = id.strip_prefix("block:") {
+            if let Some(artist) = t.artist_list.iter().find(|a| a.id == aid) { self.toggle_block(aid, &artist.name); }
+            return;
+        }
         let net = self.st.borrow().net.clone();
         match id {
             "like" => self.like(t),
@@ -4022,14 +4138,26 @@ impl Ctx {
         let app = ui.global::<App>();
         let st = self.st.borrow();
         let c = &st.cfg;
-        self.player.eq.set(c.eq_on, c.eq_preamp, &c.eq_gains);
+        self.player.eq.set(c.eq_on, c.eq_preamp, &c.eq_gains, &c.eq_frequencies, &c.eq_q);
         app.set_eq_on(c.eq_on);
         app.set_eq_preamp(c.eq_preamp);
         app.set_eq_preset(c.eq_preset.min(crate::eq::PRESETS.len() - 1) as i32);
-        app.set_eq_gains(ModelRc::from(Rc::new(VecModel::from(c.eq_gains.to_vec()))));
+        let update = |model: ModelRc<f32>, values: &[f32]| {
+            if let Some(rows) = model.as_any().downcast_ref::<VecModel<f32>>().filter(|m| m.row_count() == values.len()) {
+                for (i, &value) in values.iter().enumerate() {
+                    if rows.row_data(i) != Some(value) { rows.set_row_data(i, value); }
+                }
+                model
+            } else {
+                ModelRc::from(Rc::new(VecModel::from(values.to_vec())))
+            }
+        };
+        app.set_eq_gains(update(app.get_eq_gains(), &c.eq_gains));
+        app.set_eq_frequencies(update(app.get_eq_frequencies(), &c.eq_frequencies));
+        app.set_eq_q(update(app.get_eq_q(), &c.eq_q));
         app.set_quality(c.quality as i32);
         crate::api::QUALITY.store(c.quality, std::sync::atomic::Ordering::Relaxed);
-        c.save();
+        self.eq_save.start(TimerMode::SingleShot, Duration::from_millis(300), || with_ctx(|ctx| ctx.st.borrow().cfg.save()));
     }
 }
 
@@ -4192,6 +4320,7 @@ impl Ctx {
                             source: Source::List { kind: ListKind::Tracks, id: format!("trailer:{path}"), title },
                             tracks,
                             start: 0,
+                            selected: false,
                             after: After::Wave(Source::Wave),
                         });
                         c.start();
@@ -4429,6 +4558,17 @@ fn save_track(api: &Api, dir: &std::path::Path, t: &Track, flac: bool) -> Result
 
 /// Колбэки новых экранов: поиск, исполнитель, полноэкранный плеер, меню, настройки звука.
 fn register_extra(app: &App) {
+    app.on_set_crossfade_seconds(|seconds| with_ctx(|ctx| {
+        let mut st = ctx.st.borrow_mut();
+        let seconds = seconds.clamp(1, 12) as u8;
+        st.cfg.crossfade_seconds = seconds;
+        ctx.ui().global::<App>().set_crossfade_seconds(i32::from(seconds));
+        if st.cfg.crossfade { ctx.player.send(Cmd::Crossfade(seconds)); }
+        st.cfg.save();
+    }));
+    app.on_quick_toggle(|| with_ctx(|c| c.quick_toggle()));
+    app.on_quick_edited(|text| with_ctx(|c| c.quick_edited(&text)));
+    app.on_quick_pick(|i, next| with_ctx(|c| c.quick_pick(i, next)));
     app.on_open_fullscreen(|m| with_ctx(|c| c.open_fullscreen(m)));
     app.on_open_track_menu(|x, y| with_ctx(|c| c.open_track_menu(x, y)));
     app.on_open_list_menu(|x, y| with_ctx(|c| c.open_list_menu(x, y)));
@@ -4733,6 +4873,33 @@ fn register_extra(app: &App) {
             c.apply_eq();
         })
     });
+    app.on_eq_shape(|i, freq, q| {
+        with_ctx(|c| {
+            let Ok(i) = usize::try_from(i) else { return };
+            if i >= 10 { return; }
+            {
+                let mut st = c.st.borrow_mut();
+                st.cfg.eq_frequencies[i] = freq.round().clamp(20.0, 20_000.0);
+                st.cfg.eq_q[i] = (q.clamp(0.3, 8.0) * 100.0).round() / 100.0;
+                st.cfg.eq_preset = 0;
+            }
+            c.apply_eq();
+        })
+    });
+    app.on_eq_reset_band(|i| {
+        with_ctx(|c| {
+            let Ok(i) = usize::try_from(i) else { return };
+            if i >= 10 { return; }
+            {
+                let mut st = c.st.borrow_mut();
+                st.cfg.eq_frequencies[i] = crate::eq::FREQS[i];
+                st.cfg.eq_q[i] = crate::eq::DEFAULT_Q;
+                st.cfg.eq_gains[i] = 0.0;
+                st.cfg.eq_preset = 0;
+            }
+            c.apply_eq();
+        })
+    });
     app.on_eq_set_preamp(|v| {
         with_ctx(|c| {
             c.st.borrow_mut().cfg.eq_preamp = (v * 20.0).round() / 20.0;
@@ -4747,6 +4914,8 @@ fn register_extra(app: &App) {
                 st.cfg.eq_preset = i;
                 if i > 0 {
                     st.cfg.eq_gains = crate::eq::PRESETS[i].1;
+                    st.cfg.eq_frequencies = crate::eq::FREQS;
+                    st.cfg.eq_q = [crate::eq::DEFAULT_Q; 10];
                     st.cfg.eq_preamp = 1.0;
                 }
             }

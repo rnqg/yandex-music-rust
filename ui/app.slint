@@ -3,6 +3,7 @@
 import { Theme } from "theme.slint";
 import { Icons, Icon, IconButton, CircleButton, PillButton, Cover, Shimmer, Fade } from "widgets.slint";
 import { Navbar } from "navbar.slint";
+import { QuickActions } from "quick-actions.slint";
 import { PlayerBar, MiniPlayer } from "playerbar.slint";
 import { ListPage } from "list.slint";
 import { CollectionPage } from "collection.slint";
@@ -97,7 +98,7 @@ export component AppWindow inherits Window {
 
     // Фон «Моей волны»: 16 ступеней палитры трека справа налево, как у оригинала.
     // На паузе все ступени чёрные: сплошная заливка вместо градиента на всё окно.
-    if new-vibe: Rectangle {
+    if new-vibe && !App.mini: Rectangle {
         property <bool> flat: App.vibe-stops[0] == App.vibe-stops[15] && App.vibe-stops[0] == App.vibe-stops[7];
         background: flat ? App.vibe-stops[0] : @linear-gradient(270deg,
             App.vibe-stops[0] 0%, App.vibe-stops[1] 10%, App.vibe-stops[2] 19%, App.vibe-stops[3] 25%,
@@ -106,6 +107,7 @@ export component AppWindow inherits Window {
             App.vibe-stops[12] 54%, App.vibe-stops[13] 60%, App.vibe-stops[14] 67%, App.vibe-stops[15] 75%);
     }
     navbar := Navbar {
+        visible: !App.mini;
         x: pad;
         y: App.macos ? 36px : top - 16px;
         width: navbar-w;
@@ -113,6 +115,7 @@ export component AppWindow inherits Window {
     }
 
     content := Rectangle {
+        visible: !App.mini;
         x: pad + navbar-w + gap;
         y: new-vibe ? (App.macos ? 0px : 20px) : top;
         width: parent.width - self.x - pad-r;
@@ -187,7 +190,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    if bar-h > 0: PlayerBar {
+    if bar-h > 0 && !App.mini: PlayerBar {
         x: content.x;
         y: parent.height - pad-r - 80px;
         width: content.width;
@@ -270,15 +273,6 @@ export component AppWindow inherits Window {
         CaptionButton { kind: 2; clicked => { App.close(); } }
     }
 
-    if App.macos && !App.logged-out && !App.fullscreen && !App.mini && !App.wave-fact-open: CaptionButton {
-        x: parent.width - self.width - pad-r;
-        y: 2px;
-        kind: 3;
-        accessible-role: button;
-        accessible-label: T.t("Мини-плеер");
-        accessible-action-default => { App.toggle-mini(); }
-        clicked => { App.toggle-mini(); }
-    }
 
     if !App.macos && !App.maximized: ResizeEdge { dir: 0; x: 8px; y: 0; width: parent.width - 16px - 4 * 46px; height: 4px; }
     if !App.macos && !App.maximized: ResizeEdge { dir: 4; x: 8px; y: parent.height - 4px; width: parent.width - 16px; height: 4px; }
@@ -412,7 +406,10 @@ export component AppWindow inherits Window {
         height: parent.height;
     }
 
-    if App.mini: MiniPlayer {
+    if App.quick-open && !App.logged-out && !App.mini: QuickActions { }
+
+    MiniPlayer {
+        visible: App.mini;
         x: 0;
         y: 0;
         width: parent.width;

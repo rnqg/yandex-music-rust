@@ -1,0 +1,100 @@
+import { Theme } from "theme.slint";
+import { Icons, CircleButton, PillButton } from "widgets.slint";
+import { App, T } from "state.slint";
+
+component Parameter inherits Rectangle {
+    in property <string> label;
+    in property <string> unit;
+    in property <float> value;
+    in property <float> low;
+    in property <float> high;
+    in property <float> step;
+    in property <bool> logarithmic;
+    callback adjusted(float);
+    height: 52px;
+    property <float> ratio: logarithmic ? log(max(low, value) / low, high / low) : (value - low) / (high - low);
+    accessible-role: slider;
+    accessible-label: label;
+    accessible-enabled: App.eq-on;
+    accessible-value: value;
+    accessible-value-minimum: low;
+    accessible-value-maximum: high;
+    accessible-value-step: step;
+    accessible-action-set-value(v) => { if App.eq-on && v.is-float() { root.adjusted(clamp(v.to-float(), low, high)); } }
+    accessible-action-increment => { if App.eq-on { root.adjusted(min(high, value + step)); } }
+    accessible-action-decrement => { if App.eq-on { root.adjusted(max(low, value - step)); } }
+    Text {
+        x: 0; y: 0; height: 22px;
+        text: root.label; font-size: Theme.font-size-label-m;
+        color: Theme.controls-color-primary-text-enabled-variant;
+    }
+    Text {
+        x: parent.width - self.preferred-width; y: 0; height: 22px;
+        text: root.value + root.unit; font-size: Theme.font-size-label-s;
+        color: Theme.controls-color-primary-text-enabled;
+    }
+    rail := Rectangle {
+        x: 7px; y: 34px; width: parent.width - 14px; height: 4px; border-radius: 2px;
+        background: Theme.controls-color-secondary-outline-enabled-stroke;
+        Rectangle {
+            x: 0; width: parent.width * clamp(root.ratio, 0, 1); border-radius: 2px;
+            background: App.eq-on ? Theme.controls-color-primary-default-enabled : Theme.controls-color-primary-default-disabled;
+        }
+        Rectangle {
+            x: parent.width * clamp(root.ratio, 0, 1) - 7px; width: 14px; height: 14px; border-radius: 7px;
+            background: App.eq-on ? Theme.controls-color-primary-text-enabled-variant : Theme.controls-color-primary-default-disabled;
+        }
+    }
+    TouchArea {
+        y: 20px; height: 30px;
+        enabled: App.eq-on; mouse-cursor: pointer;
+        function slide() {
+            let t = clamp((self.mouse-x - rail.x) / rail.width, 0, 1);
+            root.adjusted(logarithmic ? low * pow(high / low, t) : low + t * (high - low));
+        }
+        pointer-event(e) => { if e.button == PointerEventButton.left && e.kind == PointerEventKind.down { self.slide(); } }
+        moved => { if self.pressed { self.slide(); } }
+    }
+}
+
+export component ParametricEq inherits Rectangle {
+    in-out property <int> band;
+    CircleButton {
+        x: 0; y: 0; diameter: 32px; icon: Icons.arrow-left-small;
+        accessible-role: button; accessible-label: T.t("Предыдущая полоса");
+        accessible-action-default => { root.band = mod(root.band + 9, 10); }
+        clicked => { root.band = mod(root.band + 9, 10); }
+    }
+    Text {
+        x: 40px; y: 0; width: 74px; height: 32px;
+        text: T.t("Полоса") + " " + (band + 1);
+        font-size: Theme.font-size-label-m; font-weight: 700;
+        vertical-alignment: center; horizontal-alignment: center;
+        color: Theme.controls-color-primary-text-enabled-variant;
+    }
+    CircleButton {
+        x: 122px; y: 0; diameter: 32px; icon: Icons.arrow-right-small;
+        accessible-role: button; accessible-label: T.t("Следующая полоса");
+        accessible-action-default => { root.band = mod(root.band + 1, 10); }
+        clicked => { root.band = mod(root.band + 1, 10); }
+    }
+    PillButton {
+        x: parent.width - self.width; y: 0; height: 32px;
+        text: T.t("Сбросить полосу"); clicked => { App.eq-reset-band(root.band); }
+    }
+    Parameter {
+        x: 0; y: 44px; width: parent.width; label: T.t("Частота"); unit: " Гц";
+        low: 20; high: 20000; step: 1; logarithmic: true; value: App.eq-frequencies[band];
+        adjusted(v) => { App.eq-shape(root.band, v, App.eq-q[root.band]); }
+    }
+    Parameter {
+        x: 0; y: 99px; width: parent.width; label: T.t("Добротность (Q)");
+        low: 0.3; high: 8; step: 0.05; logarithmic: true; value: App.eq-q[band];
+        adjusted(v) => { App.eq-shape(root.band, App.eq-frequencies[root.band], v); }
+    }
+    Parameter {
+        x: 0; y: 154px; width: parent.width; label: T.t("Усиление"); unit: " дБ";
+        low: -12; high: 12; step: 0.5; value: App.eq-gains[band];
+        adjusted(v) => { App.eq-set-band(root.band, v); }
+    }
+}

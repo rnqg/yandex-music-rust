@@ -742,6 +742,16 @@ export component WavePage inherits Rectangle {
         }
     }
 
+    if App.macos && !App.logged-out: GlassButton {
+        x: cx + 110px;
+        y: 592px + dp;
+        width: 40px;
+        height: 40px;
+        icon-size: 22px;
+        icon: Icons.mini-player;
+        label: T.t("Мини-плеер");
+        clicked => { App.toggle-mini(); }
+    }
     if App.has-track: HorizontalLayout {
         x: cx - 88px;
         y: 580px + dp;

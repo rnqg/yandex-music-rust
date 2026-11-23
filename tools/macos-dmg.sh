@@ -39,7 +39,7 @@ version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$work/AppIcon.iconset"
 install -m 755 "$binary" "$app/Contents/MacOS/$executable"
 cp "$assets/Info.plist" "$app/Contents/Info.plist"
-cp LICENSE "$app/Contents/Resources/LICENSE"
+cp LICENSE NOTICE "$app/Contents/Resources/"
 plutil -replace CFBundleShortVersionString -string "$version" "$app/Contents/Info.plist"
 plutil -replace CFBundleVersion -string "$version" "$app/Contents/Info.plist"
 
@@ -49,7 +49,15 @@ for size in 16 32 128 256 512; do
     sips -z "$retina" "$retina" "$assets/app-icon.png" --out "$work/AppIcon.iconset/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$work/AppIcon.iconset" -o "$app/Contents/Resources/AppIcon.icns"
-codesign --force --sign - "$app"
+signer="${MUSIC_RUST_SIGN_IDENTITY:-}"
+if [[ -z "$signer" ]]; then
+    if security find-certificate -c "Music Rust Local Signing" >/dev/null 2>&1; then
+        signer="Music Rust Local Signing"
+    else
+        signer="-"
+    fi
+fi
+codesign --force --sign "$signer" "$app"
 codesign --verify --strict "$app"
 dmgbuild -s "$assets/dmg.py" -D "application=$app" "$name" "$work/music-rust.dmg"
 mv -n "$work/music-rust.dmg" "$output"

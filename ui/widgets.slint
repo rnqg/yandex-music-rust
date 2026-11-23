@@ -4,20 +4,13 @@ import { Theme } from "theme.slint";
 import { App } from "state.slint";
 
 // Картинки задаёт Rust при запуске из спрайта официального приложения.
-export component MusicMark inherits Rectangle {
-    border-radius: self.width * 0.28;
-    background: Theme.controls-color-primary-default-enabled;
-    for level[i] in [0.24, 0.44, 0.64, 0.44, 0.24]: Rectangle {
-        x: parent.width * (0.23 + i * 0.12);
-        y: (parent.height - self.height) / 2;
-        width: parent.width * 0.065;
-        height: parent.height * level;
-        border-radius: self.width / 2;
-        background: Theme.controls-color-primary-on-default-enabled;
-    }
+export component MusicMark inherits Image {
+    source: @image-url("../packaging/macos/app-mark.png");
+    image-fit: contain;
 }
 
 export global Icons {
+    out property <image> mini-player: @image-url("../icons/mini-player.svg");
     in property <image> logo;
     in property <image> logo-dark;
     // Знак без надписи — для свёрнутого навбара.

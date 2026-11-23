@@ -55,4 +55,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: gh release create "$GITHUB_REF_NAME" dist/music-rust-macos-arm64.dmg --title "Яндекс Музыка Rust ${GITHUB_REF_NAME#v} для macOS" --generate-notes
+        run: |
+          asset=music-rust-macos-arm64.dmg
+          if gh release view "$GITHUB_REF_NAME" --json tagName >/dev/null 2>&1; then
+            existing=$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[] | select(.name == "music-rust-macos-arm64.dmg") | .state')
+            if [ "$existing" != uploaded ]; then
+              gh release upload "$GITHUB_REF_NAME" "dist/$asset"
+            fi
+          else
+            gh release create "$GITHUB_REF_NAME" "dist/$asset" --verify-tag --title "Яндекс Музыка Rust ${GITHUB_REF_NAME#v} для macOS" --generate-notes
+          fi

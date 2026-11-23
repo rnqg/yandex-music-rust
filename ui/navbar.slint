@@ -125,7 +125,27 @@ export component Navbar inherits TouchArea {
         y: 76px;
         width: App.macos && !c ? parent.width - 12px : parent.width - 16px;
         spacing: 4px;
-        NavLink { icon: Icons.nav-search; icon-selected: Icons.nav-search; text: T.t("Поиск"); page: Page.search; }
+        NavLink {
+            icon: Icons.nav-search; icon-selected: Icons.nav-search; text: T.t("Поиск"); page: Page.search;
+            if App.macos && !App.nav-collapsed: Rectangle {
+                x: parent.width - self.width - 12px;
+                width: 38px;
+                height: 26px;
+                border-radius: Theme.radius-size-m;
+                background: key-ta.has-hover ? Theme.controls-color-secondary-default-hovered : Theme.controls-color-secondary-default-enabled;
+                accessible-role: button;
+                accessible-label: T.t("Быстрые действия");
+                accessible-action-default => { App.quick-toggle(); }
+                Text {
+                    text: "⌘K";
+                    font-size: Theme.font-size-label-xs;
+                    color: Theme.controls-color-primary-text-enabled;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                key-ta := TouchArea { mouse-cursor: pointer; clicked => { App.quick-toggle(); } }
+            }
+        }
         NavLink { icon: Icons.nav-wave; icon-selected: Icons.nav-wave; text: T.t("Моя волна"); page: Page.wave; }
         NavLink { icon: Icons.nav-trends; icon-selected: Icons.nav-trends-selected; text: T.t("Для вас и Тренды"); page: Page.trends; }
         NavLink { icon: Icons.nav-concerts; icon-selected: Icons.nav-concerts-selected; text: T.t("Концерты"); page: Page.concerts; }

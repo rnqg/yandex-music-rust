@@ -1,6 +1,6 @@
 [package]
 name = "music-rust"
-version = "1.1.4"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.92"
 license = "GPL-3.0-only"
@@ -11,6 +11,7 @@ repository = "https://github.com/rnqg/yandex-music-rust"
 skia-safe = { version = "0.153.3", default-features = false }
 slint = { version = "1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "unstable-fontique-011", "unstable-winit-030"] }
 rodio = { version = "0.20", default-features = false, features = ["symphonia-mp3", "symphonia-aac", "symphonia-isomp4"] }
+symphonia = { version = "0.5.5", default-features = false, features = ["mp3", "aac", "isomp4"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -55,14 +56,16 @@ secret-service = { version = "5.2", default-features = false, features = ["rt-as
 
 [target.'cfg(target_os = "macos")'.dependencies]
 arboard = { version = "3.7", default-features = false }
-slint = { version = "1.18", default-features = false, features = ["accessibility"] }
+slint = { version = "1.18", default-features = false, features = ["accessibility", "unstable-wgpu-30"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSAccessibility", "NSApplication", "NSAppearance", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSScreen", "NSView", "NSWindow", "NSWorkspace", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSProcessInfo", "NSString", "NSURL"] }
-objc2-metal = { version = "0.3", default-features = false, features = ["std", "MTLCommandQueue", "MTLDevice"] }
+wgpu = { version = "30", default-features = false, features = ["metal", "wgsl", "glsl", "naga-ir"] }
+futures-lite = "2"
 objc2-service-management = { version = "0.3", default-features = false, features = ["std", "objc2", "objc2-foundation", "SMAppService"] }
-security-framework = "3"
+rustix = { version = "1", features = ["fs", "process"] }
 souvlaki = { version = "0.8", default-features = false }
+tempfile = "3"
 
 [build-dependencies]
 slint-build = "1.18"

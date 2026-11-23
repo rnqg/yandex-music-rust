@@ -4,8 +4,9 @@
 use crate::api::{personal_wave_seeds, Account, Api, Batch, Res, Track, WaveSession, WAVE};
 use crate::config::log;
 use crate::eq::{Eq, EqParams};
-use crate::stream::{Buf, Reader};
-use rodio::{Decoder, OutputStream, Sink, Source as _};
+use crate::stream::Buf;
+use crate::audio_decoder::Decoder;
+use rodio::{OutputStream, Sink, Source as _};
 use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
@@ -119,15 +120,17 @@ pub enum Cmd {
     Wave(Source),
     SetWaveFilters { source: Source, finish: WaveFilterResult },
     WaveRoomLeft(String),
-    PlayList { source: Source, tracks: Vec<Track>, start: usize, after: After },
+    PlayList { source: Source, tracks: Vec<Track>, start: usize, selected: bool, after: After },
     /// Перейти к треку из очереди (индекс в `upcoming`).
     Jump(usize),
     Repeat(Repeat),
+    Crossfade(u8),
     Shuffle(bool),
     /// «Играть следующим» (`next`) или «Добавить в конец очереди».
     Enqueue { track: Track, next: bool },
     /// Переключатель «Треки 18+».
     AllowExplicit(bool),
+    Rules(crate::playback_rules::PlaybackRules),
 }
 
 enum Msg {
@@ -296,7 +299,105 @@ fn round3(x: f64) -> f64 {
 }
 
 /// Трек, который качается, и декодер, уже прочитавший его начало.
-type Audio = (Arc<Buf>, Decoder<Reader>);
+type Audio = (Arc<Buf>, Decoder);
+
+struct PreparedMix {
+    plan: crate::crossfade::Plan,
+    intro: Option<Decoder>,
+}
+
+struct MixProbe {
+    gen: u64,
+    next: String,
+    seconds: u8,
+    started: Instant,
+    pending: Option<Receiver<Option<PreparedMix>>>,
+    prepared: Option<PreparedMix>,
+}
+
+fn overlap_headroom(out: &Arc<Buf>, next: &Arc<Buf>, plan: &crate::crossfade::Plan, intro: Option<&Decoder>) -> Option<[u8; 8]> {
+    let length = plan.end - plan.start;
+    let slices = (length * 80.0).ceil().max(1.0) as usize;
+    let hold = (plan.lead_in * 1000.0).round() as u16;
+    let fade = ((length * 1000.0).round() as i32 - i32::from(hold)).max(1);
+    let peaks = |buf: &Arc<Buf>, position: f32, direction: i32, preview: Option<&Decoder>| {
+        let mut src = Decoder::new(buf.reader()).ok()?;
+        if position > 0.0 { src.try_seek(Duration::from_secs_f32(position)).ok()?; }
+        if let Some(prepared) = preview { src.preview_intro(prepared); }
+        let (rate, ch) = (src.sample_rate(), usize::from(src.channels()));
+        let control = crate::crossfade::Control::default();
+        control.start(direction * fade, hold, plan.mix);
+        let mut audio = Eq::new(src, Default::default(), control);
+        let count = (length * rate as f32).round() as usize;
+        let mut result = Vec::with_capacity(slices);
+        for i in 0..slices {
+            let frames = (i+1) * count / slices - i * count / slices;
+            let peak = audio.by_ref().take(frames * ch).fold(0.0_f32, |p,x| p.max(x.abs()));
+            result.push(peak);
+        }
+        Some(result)
+    };
+    let a = peaks(out, plan.start, -1, None)?;
+    let b = peaks(next, plan.cue, 1, intro)?;
+    let mut trim = [0u8; 8];
+    for (i, (&a, &b)) in a.iter().zip(&b).enumerate() {
+        let required = (1.0 - 0.98 / (a+b).max(0.001)).clamp(0.0, 0.45);
+        let slot = i * trim.len() / slices;
+        trim[slot] = trim[slot].max((required * 255.0).ceil() as u8);
+    }
+    let raw = trim;
+    for (i, t) in trim.iter_mut().enumerate() {
+        *t = raw[i.saturating_sub(1)..=(i+1).min(7)].iter().copied().max().unwrap_or(0);
+    }
+    Some(trim)
+}
+
+impl MixProbe {
+    fn start(gen: u64, next: String, seconds: u8, current: Arc<Buf>, upcoming: Arc<Buf>, duration: f32, next_duration: f32) -> Self {
+        use crate::crossfade::analysis::{self, Edge, EDGE_SECONDS};
+        let (send, receive) = mpsc::channel();
+        thread::spawn(move || {
+            let edge = |buf: &Arc<Buf>, start: f32| {
+                let mut decoder = Decoder::new(buf.reader()).ok()?;
+                if start > 0.0 { decoder.try_seek(Duration::from_secs_f32(start)).ok()?; }
+                let rate = decoder.sample_rate();
+                let channels = decoder.channels();
+                Edge::read(decoder, rate, channels, start)
+            };
+            let plan = edge(&current, (duration - EDGE_SECONDS).max(0.0)).and_then(|out| {
+                let incoming = edge(&upcoming, 0.0)?;
+                let mut plan = analysis::plan(&out, &incoming, duration, next_duration, seconds)?;
+                let prepare = || {
+                    let mut source = Decoder::new(upcoming.reader()).ok()?;
+                    if plan.cue > 0.0 { source.try_seek(Duration::from_secs_f32(plan.cue)).ok()?; }
+                    if let Some(tempo) = plan.tempo { source.match_tempo(tempo) } else { Some(source) }
+                };
+                let edited = plan.cue > 0.0 || plan.tempo.is_some();
+                let intro = if edited { prepare() } else { None };
+                if edited && intro.is_none() {
+                    plan = crate::crossfade::Plan::basic(seconds, duration, next_duration);
+                }
+                if let Some(trim) = overlap_headroom(&current, &upcoming, &plan, intro.as_ref()) {
+                    plan.mix.trim = trim;
+                }
+                Some(PreparedMix { plan, intro })
+            });
+            let _ = send.send(plan);
+        });
+        Self { gen, next, seconds, started: Instant::now(), pending: Some(receive), prepared: None }
+    }
+
+    fn poll(&mut self) {
+        if let Some(rx) = &self.pending {
+            match rx.try_recv() {
+                Ok(value) => self.prepared = value,
+                Err(mpsc::TryRecvError::Empty) => return,
+                Err(mpsc::TryRecvError::Disconnected) => {}
+            }
+            self.pending = None;
+        }
+    }
+}
 
 /// Имя выхода Windows по умолчанию. На Linux звук идёт в «default», и за сменой устройства
 /// там следит PipeWire или PulseAudio.
@@ -373,6 +474,17 @@ struct ListPlay {
     after: After,
 }
 
+struct Overlap {
+    track_id: String,
+    sink: Sink,
+    control: crate::crossfade::Control,
+    tempo: Option<crate::crossfade::tempo::Tempo>,
+    cue: f32,
+    buffer: Arc<Buf>,
+    duration: Duration,
+    media_seconds: f32,
+}
+
 struct Engine {
     tx: Sender<Msg>,
     bg: Sender<Job>,
@@ -380,7 +492,15 @@ struct Engine {
     likes: Likes,
     notify: Notify,
     eq: Arc<EqParams>,
-    audio: Option<(OutputStream, Sink)>,
+    audio: Option<(OutputStream, rodio::OutputStreamHandle, Sink)>,
+    fade: crate::crossfade::Control,
+    crossfade_seconds: u8,
+    song_tempo: Option<crate::crossfade::tempo::Tempo>,
+    song_cue: f32,
+    media_seconds: f32,
+    overlap: Option<Overlap>,
+    mix_probe: Option<MixProbe>,
+    next_tick: Duration,
     /// Выход Windows по умолчанию, на котором открыт звук, и когда его последний раз сверяли.
     #[cfg(windows)]
     out_name: Option<String>,
@@ -416,6 +536,11 @@ struct Engine {
     fetching: bool,
     batch_gen: u64,
     retry_at: Option<Instant>,
+    rules: crate::playback_rules::PlaybackRules,
+    wave_history: crate::playback_rules::WaveHistory,
+    recorded_current: bool,
+    empty_batches: u8,
+    filtered_cursor: Option<String>,
     gen: u64,
     loaded: bool,
     paused: bool,
@@ -448,6 +573,14 @@ impl Engine {
             notify,
             eq,
             audio: None,
+            fade: Default::default(),
+            crossfade_seconds: 0,
+            song_tempo: None,
+            song_cue: 0.0,
+            media_seconds: 0.0,
+            overlap: None,
+            mix_probe: None,
+            next_tick: Duration::from_millis(200),
             #[cfg(windows)]
             out_name: None,
             #[cfg(windows)]
@@ -474,6 +607,11 @@ impl Engine {
             fetching: false,
             batch_gen: 0,
             retry_at: None,
+            rules: Default::default(),
+            wave_history: Default::default(),
+            recorded_current: false,
+            empty_batches: 0,
+            filtered_cursor: None,
             gen: 0,
             loaded: false,
             paused: true,
@@ -489,7 +627,7 @@ impl Engine {
 
     fn run(mut self, rx: Receiver<Msg>) {
         loop {
-            match rx.recv_timeout(Duration::from_millis(200)) {
+            match rx.recv_timeout(self.next_tick) {
                 Ok(msg) => {
                     self.handle(msg);
                     self.sync();
@@ -509,7 +647,7 @@ impl Engine {
     }
 
     fn sink(&self) -> Option<&Sink> {
-        self.audio.as_ref().map(|(_, s)| s)
+        self.audio.as_ref().map(|(_, _, s)| s)
     }
 
     fn ensure_audio(&mut self) -> bool {
@@ -517,7 +655,7 @@ impl Engine {
             match open_output() {
                 Ok((stream, handle)) => match Sink::try_new(&handle) {
                     Ok(sink) => {
-                        self.audio = Some((stream, sink));
+                        self.audio = Some((stream, handle, sink));
                         #[cfg(windows)]
                         {
                             self.out_name = default_output_name();
@@ -533,7 +671,10 @@ impl Engine {
 
     fn pos(&self) -> f32 {
         match self.sink() {
-            Some(s) => s.get_pos().as_secs_f32(),
+            Some(s) => {
+                let output = s.get_pos().as_secs_f32();
+                self.song_cue + self.song_tempo.map_or(output, |tempo| tempo.media_time(output))
+            }
             None => self.held_pos.unwrap_or(0.0),
         }
     }
@@ -552,6 +693,7 @@ impl Engine {
         }
         log(format!("аудиовыход: {} → {}", self.out_name.as_deref().unwrap_or("нет"), now.as_deref().unwrap_or("нет")));
         let pos = self.pos();
+        self.cancel_overlap();
         self.audio = None;
         self.out_name = None;
         if !self.loaded {
@@ -578,7 +720,8 @@ impl Engine {
             return false;
         }
         let Ok(src) = Decoder::new(buf.reader()) else { return false };
-        let src = Eq::new(src.convert_samples::<f32>(), self.eq.clone());
+        self.song_cue = 0.0; self.song_tempo = None;
+        let src = Eq::new(src, self.eq.clone(), self.fade.clone());
         let (vol, paused) = (self.volume * self.volume, self.paused);
         let Some(sink) = self.sink() else { return false };
         sink.pause();
@@ -800,10 +943,13 @@ impl Engine {
         if let Some(c) = &self.current {
             q.push(c.full_id());
         }
+        q.extend(self.filtered_cursor.iter().cloned());
         q
     }
 
     fn stop_audio(&mut self) {
+        self.song_cue = 0.0; self.song_tempo = None;
+        self.cancel_overlap();
         if let Some(s) = self.sink() {
             s.clear();
         }
@@ -812,6 +958,7 @@ impl Engine {
     }
 
     fn clear_queue(&mut self) {
+        self.cancel_overlap();
         self.flush_feedback();
         self.queue.clear();
         self.prefetch = None;
@@ -819,6 +966,8 @@ impl Engine {
         self.fetching = false;
         self.batch_gen += 1;
         self.retry_at = None;
+        self.empty_batches = 0;
+        self.filtered_cursor = None;
         self.batch_id.clear();
         self.session.clear();
     }
@@ -875,6 +1024,14 @@ impl Engine {
     // ---------- главный цикл ----------
 
     fn tick(&mut self) {
+        self.next_tick = Duration::from_millis(200);
+        if let Some(probe) = &mut self.mix_probe {
+            probe.poll();
+            if probe.pending.is_none() && (probe.gen != self.gen || probe.seconds != self.crossfade_seconds
+                || self.queue.front().is_none_or(|track| track.id != probe.next)) {
+                self.mix_probe = None;
+            }
+        }
         #[cfg(windows)]
         self.check_output();
         if let Some(at) = self.retry_at {
@@ -883,7 +1040,11 @@ impl Engine {
                 self.fetch_batch();
             }
         }
-        if self.loaded && !self.paused && self.sink().map(|s| s.empty()).unwrap_or(false) {
+        if self.overlap.as_ref().is_some_and(|overlap| self.queue.front().is_none_or(|t| t.id != overlap.track_id)) {
+            self.cancel_overlap();
+        }
+        if self.loaded && !self.paused && (self.sink().is_some_and(Sink::empty)
+            || self.overlap.as_ref().is_some_and(|o| o.sink.get_pos() >= o.duration)) {
             if self.repeat == Repeat::One && self.current_buf.is_some() {
                 if let Some(l) = &mut self.listen {
                     l.repeated = true;
@@ -901,6 +1062,9 @@ impl Engine {
             (self.notify)();
             return;
         }
+        if self.crossfade_seconds > 0 && self.loaded && !self.paused && self.repeat != Repeat::One && self.overlap.is_none() {
+            self.begin_overlap();
+        }
         self.sync();
         if self.loaded && self.prefetch.is_none() && self.prefetching.is_none() {
             self.prefetch_next();
@@ -915,7 +1079,8 @@ impl Engine {
     fn replay(&mut self) -> bool {
         let Some(buf) = self.current_buf.clone() else { return false };
         let Ok(src) = Decoder::new(buf.reader()) else { return false };
-        let src = Eq::new(src.convert_samples::<f32>(), self.eq.clone());
+        let src = Eq::new(src, self.eq.clone(), self.fade.clone());
+        self.song_cue = 0.0; self.song_tempo = None;
         if let Some(sink) = self.sink() {
             sink.append(src);
             sink.play();
@@ -968,7 +1133,8 @@ impl Engine {
                 let waiting = !self.loaded && self.current.as_ref().map(|t| t.id == id).unwrap_or(false);
                 match res {
                     Ok(b) if waiting => self.play_loaded(b),
-                    Ok(b) => self.prefetch = Some((id, b)),
+                    Ok(b) if self.queue.front().is_some_and(|t| t.id == id) => self.prefetch = Some((id, b)),
+                    Ok(_) => {}
                     Err(e) => {
                         log(format!("prefetch {id}: {e}"));
                         if waiting {
@@ -988,6 +1154,7 @@ impl Engine {
                 let api = Api::new(&token);
                 self.api = Some(api.clone());
                 self.uid = account.uid.clone();
+                self.wave_history = crate::playback_rules::WaveHistory::load(&crate::config::dir(), &self.uid, crate::config::now_secs());
                 {
                     let mut s = self.sh();
                     s.status = Status::Ready;
@@ -1022,6 +1189,7 @@ impl Engine {
                     l.pause = true;
                 }
                 if let Some(sink) = self.sink() { sink.pause(); }
+                if let Some(overlap) = &self.overlap { overlap.sink.pause(); }
             }
             Cmd::Next => {
                 self.errors_in_row = 0;
@@ -1029,8 +1197,9 @@ impl Engine {
                     self.advance(End::Skip);
                 }
             }
-            Cmd::Prev => self.prev(),
+            Cmd::Prev => { self.cancel_overlap(); self.prev(); }
             Cmd::Seek(sec) => {
+                self.cancel_overlap();
                 if let Some(l) = &mut self.listen {
                     l.seek = true;
                 }
@@ -1038,7 +1207,7 @@ impl Engine {
                     if let Some(s) = self.sink() {
                         if let Err(e) = s.try_seek(Duration::from_secs_f32(sec.max(0.0))) {
                             log(format!("seek: {e:?}"));
-                        }
+                        } else { self.song_cue = 0.0; self.song_tempo = None; }
                     } else if self.held_pos.is_some() {
                         self.held_pos = Some(sec.max(0.0));
                     }
@@ -1046,6 +1215,7 @@ impl Engine {
             }
             Cmd::Volume(v) => {
                 self.volume = v.clamp(0.0, 1.0);
+                if let Some(overlap) = &self.overlap { overlap.sink.set_volume(self.volume * self.volume); }
                 if let Some(s) = self.sink() {
                     s.set_volume(self.volume * self.volume);
                 }
@@ -1072,7 +1242,7 @@ impl Engine {
                     self.paused = true;
                 }
             }
-            Cmd::PlayList { source, tracks, start, after } => {
+            Cmd::PlayList { source, tracks, start, selected, after } => {
                 if tracks.is_empty() {
                     return;
                 }
@@ -1081,12 +1251,21 @@ impl Engine {
                     self.error("Здесь только треки 18+. Их можно включить в меню профиля");
                     return;
                 }
+                if !selected && tracks.iter().all(|t| self.rules.blocked_artist(t) || (!crate::api::allow_explicit() && t.explicit)) {
+                    self.error("Все треки в этом списке скрыты фильтрами");
+                    return;
+                }
                 self.end_current(Some("skip"), true, "other_track");
                 self.clear_queue();
                 let start = start.min(tracks.len() - 1);
                 let mut order: Vec<Track> = tracks.clone();
-                order.rotate_left(start);
-                let first = order.remove(0);
+                if self.rules.stop_at_end && !self.shuffle && self.repeat != Repeat::All {
+                    order.drain(..start);
+                } else {
+                    order.rotate_left(start);
+                }
+                let mut first = order.remove(0);
+                first.user_requested = selected;
                 if self.shuffle {
                     shuffle(&mut order);
                 }
@@ -1101,6 +1280,7 @@ impl Engine {
                     return;
                 }
                 let skipped: Vec<Track> = self.queue.drain(..i).collect();
+                if let Some(track) = self.queue.front_mut() { track.user_requested = true; }
                 self.end_current(Some("skip"), true, "other_track");
                 if let Some(cur) = self.current.take() {
                     self.history.push(cur);
@@ -1112,8 +1292,17 @@ impl Engine {
                 self.refresh_wave();
                 self.flush_feedback();
             }
-            Cmd::Repeat(r) => self.repeat = r,
-            Cmd::Enqueue { track, next } => {
+            Cmd::Repeat(r) => {
+                self.repeat = r;
+                if r == Repeat::One { self.cancel_overlap(); }
+            }
+            Cmd::Crossfade(seconds) => {
+                self.crossfade_seconds = seconds.min(12);
+                if seconds == 0 { self.cancel_overlap(); }
+            }
+            Cmd::Enqueue { mut track, next } => {
+                track.user_requested = true;
+                track.batch_id.clear();
                 if next {
                     self.queue.push_front(track);
                     self.prefetch = None;
@@ -1123,6 +1312,17 @@ impl Engine {
                 } else {
                     self.queue.push_back(track);
                 }
+            }
+            Cmd::Rules(rules) => {
+                let skip = self.current.as_ref().is_some_and(|t| rules.blocked_artist(t) && !self.rules.blocked_artist(t));
+                self.rules = rules;
+                self.filter_queue();
+                if self.empty_batches >= 4 && self.list.is_none() {
+                    self.empty_batches = 0;
+                    self.retry_at = None;
+                    self.fetch_batch();
+                }
+                if skip { self.advance(End::Skip); }
             }
             Cmd::AllowExplicit(allow) => self.set_allow_explicit(allow),
             Cmd::Shuffle(on) => {
@@ -1213,7 +1413,7 @@ impl Engine {
     }
 
     fn fetch_batch_with(&mut self, replace: bool) {
-        if self.fetching || self.list.is_some() {
+        if self.fetching || self.list.is_some() || self.empty_batches >= 4 || self.retry_at.is_some() {
             return;
         }
         let Some(station) = self.source.station().map(String::from) else { return };
@@ -1276,14 +1476,28 @@ impl Engine {
             self.queue.clear();
             self.prefetch = None;
         }
-        // Пакет берётся как есть, как у оригинала: сервер сам решает, что повторить.
-        // Убираем только то, что уже стоит в очереди или играет, и 18+, если их выключили.
-        let queued = |t: &Track| {
-            self.queue.iter().any(|q| q.id == t.id) || (!replace && self.current.as_ref().is_some_and(|c| c.id == t.id))
-        };
-        let no_explicit = !crate::api::allow_explicit();
-        let tracks: Vec<Track> = b.tracks.iter().filter(|t| !queued(t) && !(no_explicit && t.explicit)).cloned().collect();
-        self.queue.extend(tracks);
+        let cursor = b.tracks.last().map(Track::full_id);
+        let mut queued: HashSet<String> = self.queue.iter().map(|t| t.id.clone()).collect();
+        if let Some(current) = &self.current { queued.insert(current.id.clone()); }
+        let before = self.queue.len();
+        let now = crate::config::now_secs();
+        let daily = self.rules.unique_wave && !self.source.private_wave();
+        self.queue.extend(b.tracks.into_iter().filter(|t| {
+            (crate::api::allow_explicit() || !t.explicit) && self.rules.allows(t, true)
+                && !(daily && self.wave_history.contains(&t.id, now)) && queued.insert(t.id.clone())
+        }));
+        if self.queue.len() == before {
+            self.filtered_cursor = cursor;
+            self.empty_batches += 1;
+            if self.empty_batches < 4 {
+                self.retry_at = Some(Instant::now() + Duration::from_millis(450));
+            } else {
+                self.error("Волна пока не нашла треков с этими фильтрами");
+            }
+        } else {
+            self.empty_batches = 0;
+            self.filtered_cursor = None;
+        }
         if replace {
             self.advance(End::Restart);
         } else if self.current.is_none() {
@@ -1314,7 +1528,9 @@ impl Engine {
             self.history.push(cur);
             self.trim_history();
         }
+        let overlap = if matches!(end, End::Finished | End::Skip) { self.overlap.take() } else { None };
         self.stop_audio();
+        self.overlap = overlap;
         self.play_from_queue();
         if matches!(end, End::Skip | End::Dislike) {
             self.refresh_wave();
@@ -1339,6 +1555,7 @@ impl Engine {
 
     /// Список закончился: по кругу (исполнитель) или волна по нему (плейлист, альбом).
     fn list_finished(&mut self) {
+        if self.rules.stop_at_end { return; }
         let Some(l) = self.list.take() else { return };
         match l.after {
             After::Loop => {
@@ -1415,6 +1632,12 @@ impl Engine {
     }
 
     fn resume(&mut self) {
+        if self.current.is_none() && self.empty_batches >= 4 { self.empty_batches = 0; }
+        if self.paused && self.current.is_none() && self.queue.is_empty() && self.rules.stop_at_end {
+            if let Some(list) = &self.list {
+                if list.deferred.is_empty() { self.queue.extend(list.all.iter().cloned()); }
+            }
+        }
         self.paused = false;
         if let Some(pos) = self.held_pos.filter(|_| self.loaded && self.audio.is_none()) {
             if !self.restore_at(pos) {
@@ -1428,16 +1651,40 @@ impl Engine {
             l.go();
         }
         if self.current.is_none() {
-            if self.list.is_some() {
+            if self.list.is_some() || !self.queue.is_empty() {
                 self.play_from_queue();
                 return;
             }
             if self.sh().status == Status::Ready { self.fetch_batch(); }
         }
         if let Some(sink) = self.sink() { sink.play(); }
+        if let Some(overlap) = &self.overlap { overlap.sink.play(); }
+        self.record_wave_play();
+    }
+
+    fn record_wave_play(&mut self) {
+        if self.recorded_current || !self.loaded || self.paused || self.list.is_some() || self.source.private_wave() { return; }
+        if let Some(track) = self.current.as_ref().filter(|t| !t.user_requested) {
+            self.recorded_current = true;
+            if let Err(error) = self.wave_history.record(&track.id, crate::config::now_secs()) {
+                self.error(format!("Не удалось сохранить историю Волны: {error}"));
+            }
+        }
+    }
+
+    fn filter_queue(&mut self) {
+        let wave = self.list.is_none() && self.source.station().is_some();
+        let daily = wave && self.rules.unique_wave && !self.source.private_wave();
+        let now = crate::config::now_secs();
+        self.queue.retain(|t| self.rules.allows(t, wave)
+            && (t.user_requested || !daily || !self.wave_history.contains(&t.id, now)));
+        if self.prefetch.as_ref().is_some_and(|(id, _)| self.queue.front().is_none_or(|t| &t.id != id)) {
+            self.prefetch = None;
+        }
     }
 
     fn play_from_queue(&mut self) {
+        self.filter_queue();
         let blocked_list = self.blocked_list();
         if blocked_list {
             self.defer_explicit();
@@ -1458,8 +1705,24 @@ impl Engine {
         if !crate::api::allow_explicit() {
             self.queue.retain(|t| !t.explicit);
         }
+        self.filter_queue();
         match self.queue.pop_front() {
             Some(t) => {
+                if t.user_requested && t.batch_id.is_empty() && self.rules.stop_at_end && self.list.is_none() {
+                    let after = After::Wave(self.source.clone());
+                    self.queue.retain(|next| next.user_requested);
+                    self.list = Some(ListPlay {
+                        all: std::iter::once(t.clone()).chain(self.queue.iter().cloned()).collect(),
+                        deferred: VecDeque::new(),
+                        after,
+                    });
+                    self.batch_gen += 1;
+                    self.fetching = false;
+                    self.retry_at = None;
+                    self.flush_feedback();
+                    self.session.clear();
+                    self.set_source(Source::List { kind: ListKind::Tracks, id: "queue".into(), title: "Очередь".into() });
+                }
                 self.current = Some(t);
                 self.start_current();
             }
@@ -1470,7 +1733,9 @@ impl Engine {
                 self.gen += 1;
                 let mut s = self.sh();
                 s.track = None;
-                s.loading = self.list.is_none() && self.source.station().is_some();
+                s.loading = self.empty_batches < 4 && self.list.is_none() && self.source.station().is_some();
+                drop(s);
+                if self.empty_batches >= 4 { self.paused = true; }
             }
         }
         // Как у оригинала: новый пакет волны нужен, когда заиграл последний трек очереди.
@@ -1482,7 +1747,7 @@ impl Engine {
     fn prev(&mut self) {
         if self.loaded && self.pos() > 4.0 {
             if let Some(s) = self.sink() {
-                let _ = s.try_seek(Duration::ZERO);
+                if s.try_seek(Duration::ZERO).is_ok() { self.song_cue = 0.0; self.song_tempo = None; }
             }
             return;
         }
@@ -1499,7 +1764,7 @@ impl Engine {
             self.start_current();
         } else if self.loaded {
             if let Some(s) = self.sink() {
-                let _ = s.try_seek(Duration::ZERO);
+                if s.try_seek(Duration::ZERO).is_ok() { self.song_cue = 0.0; self.song_tempo = None; }
             }
         }
     }
@@ -1507,6 +1772,8 @@ impl Engine {
     // ---------- загрузка ----------
 
     fn start_current(&mut self) {
+        self.song_cue = 0.0; self.song_tempo = None;
+        self.recorded_current = false;
         self.gen += 1;
         self.loaded = false;
         self.listen = None;
@@ -1522,6 +1789,30 @@ impl Engine {
             s.position = 0.0;
             s.duration = t.duration_ms as f32 / 1000.0;
             s.loading = true;
+        }
+        if let Some(overlap) = self.overlap.take() {
+            if overlap.track_id == t.id {
+                if let Some((_, _, sink)) = &mut self.audio {
+                    *sink = overlap.sink;
+                    self.song_cue = overlap.cue;
+                    self.song_tempo = overlap.tempo;
+                    self.fade = overlap.control;
+                    self.fade.reset();
+                    self.media_seconds = overlap.media_seconds;
+                    self.current_buf = Some(overlap.buffer);
+                    self.loaded = true;
+                    self.errors_in_row = 0;
+                    self.sh().loading = false;
+                    let elapsed = self.sink().map_or(0.0, |sink| sink.get_pos().as_secs_f32());
+                    if let Some(listen) = &mut self.listen {
+                        listen.played = f64::from(elapsed);
+                        if !self.paused { listen.go(); }
+                    }
+                    self.record_wave_play();
+                    self.remember_wave(&t);
+                    return;
+                }
+            }
         }
         if self.prefetch.as_ref().map(|(id, _)| *id == t.id).unwrap_or(false) {
             let (_, b) = self.prefetch.take().unwrap();
@@ -1544,7 +1835,67 @@ impl Engine {
         });
     }
 
+    fn cancel_overlap(&mut self) {
+        self.fade.reset();
+        let Some(overlap) = self.overlap.take() else { return };
+        drop(overlap.sink);
+        if self.queue.front().is_some_and(|t| t.id == overlap.track_id) {
+            if let Ok(decoder) = Decoder::new(overlap.buffer.reader()) {
+                self.prefetch = Some((overlap.track_id, (overlap.buffer, decoder)));
+            }
+        }
+    }
+
+    fn begin_overlap(&mut self) {
+        let (Some(current), Some(next), Some((id, (buf, decoder)))) = (&self.current, self.queue.front(), &self.prefetch) else { return };
+        if next.id != *id { return; }
+        let duration = if self.media_seconds > 0.0 { self.media_seconds } else { current.duration_ms as f32 / 1000.0 };
+        let next_duration = decoder.total_duration().map(|d| d.as_secs_f32()).unwrap_or(next.duration_ms as f32 / 1000.0);
+        let pos = self.pos();
+        if duration <= 0.0 || next_duration <= 0.0 || duration - pos > 30.0 || !buf.complete() { return; }
+        if !self.shuffle && matches!(self.source, Source::List { kind: ListKind::Album, .. })
+            && self.list.as_ref().is_some_and(|list| list.all.windows(2).any(|pair| pair[0].id == current.id && pair[1].id == next.id)) {
+            return;
+        }
+        let matching = self.mix_probe.as_ref().is_some_and(|p| p.gen == self.gen && p.next == *id && p.seconds == self.crossfade_seconds);
+        if !matching && self.mix_probe.as_ref().is_none_or(|p| p.pending.is_none()) {
+            if let Some(current_buf) = self.current_buf.as_ref().filter(|b| b.complete()) {
+                self.mix_probe = Some(MixProbe::start(self.gen, id.clone(), self.crossfade_seconds,
+                    current_buf.clone(), buf.clone(), duration, next_duration));
+            }
+        }
+        let probe = self.mix_probe.as_ref().filter(|p| p.gen == self.gen && p.next == *id && p.seconds == self.crossfade_seconds);
+        let mut plan = probe.and_then(|p| p.prepared.as_ref().map(|ready| ready.plan))
+            .unwrap_or_else(|| crate::crossfade::Plan::basic(self.crossfade_seconds, duration, next_duration));
+        if probe.is_some_and(|p| p.prepared.is_some()) { plan.catch_up(pos); }
+        if pos < plan.start {
+            self.next_tick = Duration::from_secs_f32((plan.start - pos).clamp(0.004, 0.2));
+            return;
+        }
+        if probe.is_some_and(|p| p.pending.is_some() && p.started.elapsed() < Duration::from_secs(2)) && plan.end - pos > 0.45 {
+            self.next_tick = Duration::from_millis(15);
+            return;
+        }
+        let Some(ms) = plan.fade_ms(pos) else { return };
+        let Some((_, handle, _)) = &self.audio else { return };
+        let Ok(sink) = Sink::try_new(handle) else { return };
+        let Some((track_id, (buffer, decoder))) = self.prefetch.take() else { return };
+        let decoder = if plan.cue > 0.0 || plan.tempo.is_some() {
+            self.mix_probe.take().and_then(|probe| probe.prepared).and_then(|mix| mix.intro).unwrap_or(decoder)
+        } else { decoder };
+        let lead_ms = ((plan.lead_in * 1000.0).round() as i32).min(ms - 100).max(0) as u16;
+        let fade_ms = ms - i32::from(lead_ms);
+        let control = crate::crossfade::Control::default();
+        control.start(fade_ms, lead_ms, plan.mix);
+        let source = Eq::new(decoder, self.eq.clone(), control.clone());
+        sink.set_volume(self.volume * self.volume);
+        self.fade.start(-fade_ms, lead_ms, plan.mix);
+        sink.append(source);
+        self.overlap = Some(Overlap { track_id, sink, control, tempo: plan.tempo, cue: plan.cue, buffer, media_seconds: next_duration, duration: Duration::from_millis(ms as u64) });
+    }
+
     fn prefetch_next(&mut self) {
+        if self.overlap.is_some() { return; }
         // Следующий трек качаем под конец текущего: не держать в памяти два файла всё время.
         let near_end = {
             let s = self.shared.lock().unwrap();
@@ -1568,13 +1919,14 @@ impl Engine {
     }
 
     fn play_loaded(&mut self, (buf, src): Audio) {
+        self.media_seconds = src.total_duration().map(|d| d.as_secs_f32()).unwrap_or_default();
         let Some(t) = self.current.clone() else { return };
         if !self.ensure_audio() {
             self.error("Не найдено аудиоустройство");
             self.sh().loading = false;
             return;
         }
-        let src = Eq::new(src.convert_samples::<f32>(), self.eq.clone());
+        let src = Eq::new(src, self.eq.clone(), self.fade.clone());
         let vol = self.volume * self.volume;
         let paused = self.paused;
         if let Some(sink) = self.sink() {
@@ -1595,6 +1947,7 @@ impl Engine {
         if let Some(l) = self.listen.as_mut().filter(|_| !paused) {
             l.go();
         }
+        self.record_wave_play();
         self.remember_wave(&t);
         self.prefetch_next();
     }
@@ -1706,6 +2059,240 @@ mod tests {
         assert_eq!(engine.current.as_ref().map(|track| track.id.as_str()), Some("1"));
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "uses the music catalog and the configured playback account"]
+    fn audition_catalog_transition() {
+        use crate::crossfade::analysis::{Edge, EDGE_SECONDS};
+        let Ok(selection) = std::env::var("MUSIC_MIX_TRACKS") else { return };
+        let items: Vec<&str> = selection.split('|').collect();
+        assert_eq!(items.len(), 4);
+        let mut cfg = crate::config::Config::load_settings();
+        cfg.resolve_login();
+        let api = Api::new(cfg.token.as_deref().unwrap_or_default());
+        let track = |artist: &str, title: &str| {
+            let found = api.search(&format!("{artist} {title}"), "track").expect("catalog search failed");
+            let t = found.tracks.into_iter().find(|t| t.title.eq_ignore_ascii_case(title)
+                && t.artist_list.iter().any(|a| a.name.eq_ignore_ascii_case(artist))).expect("exact track missing");
+            let (buf, decoder) = load_track(&api, &t).expect("playback unavailable");
+            let duration = decoder.total_duration().map(|d| d.as_secs_f32()).unwrap_or(t.duration_ms as f32 / 1000.0);
+            let deadline = Instant::now() + Duration::from_secs(45);
+            while !buf.complete() {
+                assert!(Instant::now() < deadline, "buffer did not finish");
+                thread::sleep(Duration::from_millis(50));
+            }
+            println!("{} — {} ({:.2} s)", t.artists, t.title, duration);
+            (buf, duration)
+        };
+        let (out, duration) = track(items[0], items[1]);
+        let (next, next_duration) = track(items[2], items[3]);
+        for (buffer, at) in [(&out, (duration-EDGE_SECONDS).max(0.0)), (&next,0.0)] {
+            let mut d = Decoder::new(buffer.reader()).unwrap();
+            if at > 0.0 { d.try_seek(Duration::from_secs_f32(at)).unwrap(); }
+            let (rate, ch) = (d.sample_rate(), d.channels());
+            let edge = Edge::read(d, rate, ch, at).unwrap();
+            println!("edge at {at:.2} s, BPM {:?}, RMS/bass/mid/high per second {:.2?}", edge.measured_bpm(), edge.levels());
+        }
+        let probe = MixProbe::start(1, "next".into(), 6, out.clone(), next.clone(), duration, next_duration);
+        let ready = probe.pending.unwrap().recv_timeout(Duration::from_secs(10)).unwrap().expect("no adaptive mix");
+        println!("analysis took {:?}", probe.started.elapsed());
+        let plan = ready.plan;
+        println!("start {:.3}, end {:.3}, cue {:.3}, tempo {:?}, mix {:?}", plan.start, plan.end, plan.cue, plan.tempo, plan.mix);
+        let mut from = Decoder::new(out.reader()).unwrap();
+        from.try_seek(Duration::from_secs_f32(plan.start)).unwrap();
+        let to = ready.intro.unwrap_or_else(|| Decoder::new(next.reader()).unwrap());
+        let left = crate::crossfade::Control::default();
+        let right = crate::crossfade::Control::default();
+        let hold = (plan.lead_in * 1000.0) as u16;
+        let ms = ((plan.end-plan.start)*1000.0).round() as i32 - i32::from(hold);
+        left.start(-ms,hold,plan.mix);
+        right.start(ms,hold,plan.mix);
+        let mut sources = Eq::new(from, Default::default(), left).mix(Eq::new(to, Default::default(), right));
+        let rate = sources.sample_rate();
+        let channels = sources.channels();
+        let count = ((plan.end-plan.start) * rate as f32).round() as usize * usize::from(channels);
+        let mut peak = 0.0_f32;
+        let mut sum = 0.0;
+        let mut clipped = 0;
+        for _ in 0..count {
+            let sample = sources.next().unwrap();
+            assert!(sample.is_finite());
+            peak = peak.max(sample.abs());
+            if sample.abs() >= 1.0 { clipped += 1; }
+            sum += f64::from(sample).powi(2);
+        }
+        println!("rendered {count} samples, peak {peak:.4}, RMS {:.3}, full-scale samples {clipped}", (sum / count as f64).sqrt());
+        assert!(peak > 0.01);
+
+        let mut engine = Engine::new(mpsc::channel().0, Default::default(), Default::default(), Arc::new(|| {}), Default::default());
+        engine.volume = 0.0;
+        engine.paused = false;
+        engine.source = Source::List { kind: ListKind::Tracks, id: String::new(), title: String::new() };
+        let metadata = |id, seconds: f32| crate::api::parse_track(&serde_json::json!({
+            "id": id, "title": "Test", "durationMs": (seconds * 1000.0) as u64
+        })).unwrap();
+        engine.current = Some(metadata(1,duration));
+        engine.queue.push_back(metadata(2,next_duration));
+        engine.start_current();
+        engine.play_loaded((out.clone(), Decoder::new(out.reader()).unwrap()));
+        engine.prefetch = Some(("2".into(), (next.clone(), Decoder::new(next.reader()).unwrap())));
+        engine.cmd(Cmd::Crossfade(6));
+        engine.cmd(Cmd::Seek((plan.start - 1.6).max(0.0)));
+        let deadline = Instant::now() + Duration::from_secs(12);
+        let mut observed = false;
+        while engine.current.as_ref().is_some_and(|t| t.id == "1") {
+            assert!(Instant::now() < deadline, "audio device handoff timed out");
+            engine.tick();
+            if let Some(active) = &engine.overlap {
+                observed = true;
+                assert!((active.cue - plan.cue).abs() < 0.08,
+                    "unexpected fallback on device: actual cue {}, expected {}, position {}, target {}, probe {:?}",
+                    active.cue, plan.cue, engine.pos(), plan.start,
+                    engine.mix_probe.as_ref().map(|p| (p.started.elapsed(), p.pending.is_some(), p.prepared.as_ref().map(|m| m.plan.cue))));
+                assert_eq!(active.tempo.is_some(), plan.tempo.is_some());
+            }
+            thread::sleep(engine.next_tick);
+        }
+        assert!(observed && engine.current.as_ref().is_some_and(|t| t.id == "2"));
+        let elapsed = engine.pos();
+        let expected = plan.cue + plan.tempo.map_or(plan.end-plan.start, |tempo| tempo.media_time(plan.end-plan.start));
+        assert!((elapsed - expected).abs() < 0.85, "playback position {elapsed} expected {expected}");
+        engine.cmd(Cmd::Seek(2.0));
+        thread::sleep(Duration::from_millis(30));
+        assert!((engine.pos() - 2.0).abs() < 0.30);
+        println!("muted audio device handoff at {elapsed:.3}, seek verified");
+
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn cached_aac_uses_its_audible_outro_and_preserves_the_intro() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("beat.wav");
+        let aac = dir.path().join("beat.m4a");
+        let rate = 44_100u32;
+        let count = rate * 20;
+        let mut pcm = std::io::BufWriter::new(std::fs::File::create(&wav).unwrap());
+        pcm.write_all(b"RIFF").unwrap();
+        pcm.write_all(&(36 + 2 * count).to_le_bytes()).unwrap();
+        pcm.write_all(b"WAVEfmt \x10\x00\x00\x00\x01\x00\x01\x00").unwrap();
+        pcm.write_all(&rate.to_le_bytes()).unwrap();
+        pcm.write_all(&(rate * 2).to_le_bytes()).unwrap();
+        pcm.write_all(b"\x02\x00\x10\x00data").unwrap();
+        pcm.write_all(&(count * 2).to_le_bytes()).unwrap();
+        for i in 0..count {
+            let t = i as f32 / rate as f32;
+            let phase = (t - 0.5).rem_euclid(0.5);
+            let x = if (0.5..19.0).contains(&t) {
+                24000.0 * (-phase * 16.0).exp() * (65.0 * phase * std::f32::consts::TAU).sin()
+            } else { 0.0 };
+            pcm.write_all(&(x as i16).to_le_bytes()).unwrap();
+        }
+        pcm.flush().unwrap();
+        let result = std::process::Command::new("/usr/bin/afconvert").args(["-f", "m4af", "-d", "aac"])
+            .arg(&wav).arg(&aac).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        let buffer = Buf::completed_bytes(std::fs::read(aac).unwrap());
+        let probe = MixProbe::start(1, "next".to_owned(), 6, buffer.clone(), buffer, 20.0, 20.0);
+        let plan = probe.pending.unwrap().recv_timeout(Duration::from_secs(10)).unwrap().unwrap().plan;
+        assert!((19.00..19.35).contains(&plan.end), "end {}", plan.end);
+        assert!((0.32..0.57).contains(&plan.lead_in), "intro {}", plan.lead_in);
+        assert!(plan.mix.bass);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires an audio output"]
+    fn crossfade_pauses_seeks_and_hands_off_at_the_audible_position() {
+        let mut engine = Engine::new(mpsc::channel().0, Default::default(), Default::default(), Arc::new(|| {}), Default::default());
+        let track = |id| crate::api::parse_track(&serde_json::json!({"id":id,"title":"Test","durationMs":4180})).unwrap();
+        let mut frame = vec![0u8; 417];
+        frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0]);
+        let buffer = Buf::completed_bytes(frame.repeat(160));
+        let decode = || (buffer.clone(), Decoder::new(buffer.reader()).unwrap());
+        let wait = |engine: &mut Engine, check: fn(&Engine) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            while !check(engine) {
+                assert!(Instant::now() < deadline, "audio transition timed out at {}", engine.pos());
+                engine.tick();
+                thread::sleep(Duration::from_millis(15));
+            }
+        };
+        engine.paused = false;
+        engine.volume = 0.0;
+        engine.source = Source::List { kind:ListKind::Album, id:"test".into(), title:String::new() };
+        engine.list = Some(ListPlay { all:vec![track(1), track(2)], deferred:Default::default(), after:After::Loop });
+        engine.current = Some(track(1));
+        engine.queue.push_back(track(2));
+        engine.start_current();
+        engine.play_loaded(decode());
+        engine.prefetch = Some(("2".into(), decode()));
+        engine.cmd(Cmd::Crossfade(3));
+        engine.cmd(Cmd::Seek(2.7));
+        engine.tick();
+        assert!(engine.overlap.is_none() && engine.mix_probe.is_none());
+        engine.cmd(Cmd::Seek(0.0));
+        engine.shuffle = true;
+        wait(&mut engine, |e| e.overlap.is_some());
+        engine.cmd(Cmd::PlayPause);
+        assert!(engine.sink().unwrap().is_paused() && engine.overlap.as_ref().unwrap().sink.is_paused());
+        engine.cmd(Cmd::Seek(1.0));
+        assert!(engine.overlap.is_none() && engine.prefetch.as_ref().is_some_and(|(id,_)| id == "2"));
+        engine.resume();
+        wait(&mut engine, |e| e.overlap.is_some());
+        wait(&mut engine, |e| e.current.as_ref().is_some_and(|t| t.id == "2"));
+        assert!(engine.pos() > 1.2 && engine.pos() < 3.0);
+        assert!(engine.queue.is_empty() && engine.overlap.is_none());
+        assert_eq!(engine.history.last().unwrap().id, "1");
+    }
+
+    #[test]
+    fn manual_queue_ends_without_fetching_another_wave() {
+        let mut engine = Engine::new(mpsc::channel().0, Default::default(), Default::default(), Arc::new(|| {}), Default::default());
+        let track = |id| crate::api::parse_track(&serde_json::json!({"id":id, "title":"Песня"})).unwrap();
+        engine.queue.push_back(track(3));
+        engine.cmd(Cmd::Enqueue { track: track(2), next: true });
+        engine.resume();
+        assert_eq!(engine.current.as_ref().unwrap().id, "2");
+        assert!(matches!(engine.source, Source::List { .. }));
+        engine.advance(End::Finished);
+        assert!(engine.paused && engine.current.is_none() && engine.queue.is_empty() && !engine.sh().loading);
+    }
+
+    #[test]
+    fn album_starts_at_selected_row_and_honors_explicit_repeat() {
+        let mut engine = Engine::new(mpsc::channel().0, Default::default(), Default::default(), Arc::new(|| {}), Default::default());
+        let tracks = (1..=3).map(|id| crate::api::parse_track(&serde_json::json!({"id":id,"title":"Песня"})).unwrap()).collect();
+        engine.cmd(Cmd::PlayList { source:Source::List { kind:ListKind::Album, id:"a".into(), title:"A".into() },
+            tracks, start:1, selected:true, after:After::Wave(Source::Wave) });
+        assert_eq!(engine.current.as_ref().unwrap().id, "2");
+        engine.advance(End::Finished);
+        assert_eq!(engine.current.as_ref().unwrap().id, "3");
+        engine.advance(End::Finished);
+        assert!(engine.current.is_none() && engine.paused && !engine.sh().loading);
+        engine.cmd(Cmd::Repeat(Repeat::All));
+        engine.resume();
+        assert_eq!(engine.current.as_ref().unwrap().id, "1");
+    }
+
+    #[test]
+    fn wave_filters_duplicates_before_playback_and_bounds_empty_batches() {
+        let mut engine = Engine::new(mpsc::channel().0, Default::default(), Default::default(), Arc::new(|| {}), Default::default());
+        engine.wave_history.record("7", crate::config::now_secs()).unwrap();
+        let batch = |ids: &[i32]| Batch {
+            tracks: ids.iter().map(|id| crate::api::parse_track(&serde_json::json!({"id":id,"title":"Песня"})).unwrap()).collect(),
+            batch_id: String::new(), liked:Vec::new(), session:String::new(), seeds:None,
+        };
+        engine.on_batch(batch(&[7,8,8]), false);
+        assert_eq!(engine.current.as_ref().unwrap().id, "8");
+        assert!(engine.queue.is_empty());
+        for _ in 0..4 { engine.on_batch(batch(&[7]), false); }
+        assert_eq!(engine.filtered_cursor.as_deref(), Some("7"));
+        engine.advance(End::Finished);
+        assert!(engine.current.is_none() && engine.paused && !engine.sh().loading);
+    }
+
     #[test]
     fn shared_wave_tracks_do_not_enter_personal_queue_history() {
         let mut engine = Engine::new(mpsc::channel().0, Default::default(), Default::default(), Arc::new(|| {}), Default::default());
@@ -1768,7 +2355,7 @@ fn explicit_filter_survives_repeat_and_previous() {
     let mut other = kept.clone();
     other.id = "3".into();
     engine.current = Some(kept.clone());
-    engine.cmd(Cmd::PlayList { source: Source::Wave, tracks: vec![other, kept], start: 1, after: After::Loop });
+    engine.cmd(Cmd::PlayList { source: Source::Wave, tracks: vec![other, kept], start: 1, selected: true, after: After::Loop });
     let still = engine.current.as_ref().map(|t| t.id.clone());
     let told = engine.sh().error.is_some();
     crate::api::ALLOW_EXPLICIT.store(previous, std::sync::atomic::Ordering::Relaxed);
